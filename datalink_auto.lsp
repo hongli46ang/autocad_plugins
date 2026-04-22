@@ -1,5 +1,35 @@
 (vl-load-com)
 
+; 安全預設：
+; 1) 禁止由 AutoCAD 回寫 Excel 來源檔
+; 2) 保留 Excel 格式（含合併儲存格、列高、欄寬）
+; UpdateOption 參考：
+; AllowSourceUpdate=1048576, SkipFormat=131072, UpdateRowHeight=262144, UpdateColumnWidth=524288,
+; OverwriteContentModifiedAfterUpdate=4194304, OverwriteFormatModifiedAfterUpdate=8388608
+(setq dl:*safe-update-flag91* 13369344)
+(setq dl:*safe-update-flag92* 1)
+
+(defun dl:bit-clear (flags bitMask)
+  (if (/= (logand flags bitMask) 0)
+    (- flags bitMask)
+    flags
+  )
+)
+
+(defun dl:normalize-update-flag91 (flag91 / out)
+  (setq out (if flag91 flag91 0))
+  ; 禁止寫回來源檔
+  (setq out (dl:bit-clear out 1048576))
+  ; 不可跳過格式，否則合併儲存格/格式會丟失
+  (setq out (dl:bit-clear out 131072))
+  ; 保留並更新 Excel 格式相關資訊
+  (setq out (logior out 262144))
+  (setq out (logior out 524288))
+  (setq out (logior out 4194304))
+  (setq out (logior out 8388608))
+  out
+)
+
 (defun dl:trim (s)
   (if s
     (vl-string-trim " \t\r\n" s)
@@ -213,7 +243,8 @@
       (vlax-put-property xl 'Visible :vlax-false)
       (vlax-put-property xl 'DisplayAlerts :vlax-false)
       (setq books (vlax-get-property xl 'Workbooks))
-      (setq openRes (vl-catch-all-apply 'vlax-invoke-method (list books 'Open filePath)))
+      ; 以唯讀方式開啟來源檔，僅讀取分頁名稱，不對來源檔做任何寫入
+      (setq openRes (vl-catch-all-apply 'vlax-invoke-method (list books 'Open filePath 0 :vlax-true)))
       (if (vl-catch-all-error-p openRes)
         (setq names nil)
         (progn
@@ -353,7 +384,7 @@
     (progn
       (setq en (vlax-vla-object->ename dictObj))
       (dl:release dictObj)
-      en
+      (if (dl:ename-p en) en nil)
     )
     nil
   )
@@ -619,61 +650,74 @@
 )
 
 (defun dl:find-datalink-key-ci-in-dict (dictEname linkName / rec rawKey keyNorm target found)
-  (setq target (strcase (dl:trim linkName))
-        rec    (dictnext dictEname T)
-        found  nil)
-  (while (and rec (null found))
-    (if (assoc 3 rec)
-      (progn
-        (setq rawKey  (cdr (assoc 3 rec))
-              keyNorm (strcase (dl:trim rawKey)))
-        (if (= keyNorm target)
-          (setq found rawKey)
+  (if (not (dl:ename-p dictEname))
+    nil
+    (progn
+      (setq target (strcase (dl:trim linkName))
+            rec    (dictnext dictEname T)
+            found  nil)
+      (while (and rec (null found))
+        (if (assoc 3 rec)
+          (progn
+            (setq rawKey  (cdr (assoc 3 rec))
+                  keyNorm (strcase (dl:trim rawKey)))
+            (if (= keyNorm target)
+              (setq found rawKey)
+            )
+          )
+        )
+        (if (null found)
+          (setq rec (dictnext dictEname))
         )
       )
-    )
-    (if (null found)
-      (setq rec (dictnext dictEname))
+      found
     )
   )
-  found
 )
 
 (defun dl:update-datalink-by-key (dictEname linkKey filePath sheetName / rec en ed conn detail dc newEd)
-  (setq rec (dictsearch dictEname linkKey))
-  (if (null rec)
+  (if (or (not (dl:ename-p dictEname))
+          (= (dl:trim linkKey) ""))
     nil
     (progn
-      (setq en (or (cdr (assoc 360 rec))
-                   (cdr (assoc 350 rec))))
-      (if (null en)
+      (setq rec (dictsearch dictEname linkKey))
+      (if (null rec)
         nil
         (progn
-          (setq ed (entget en))
-          (if (or (null ed) (/= (cdr (assoc 0 ed)) "DATALINK"))
+          (setq en (or (cdr (assoc 360 rec))
+                       (cdr (assoc 350 rec))))
+          (if (not (dl:ename-p en))
             nil
             (progn
-              (setq conn   (strcat filePath "!" sheetName)
-                    detail (strcat "Data Link\n" linkKey "\n" filePath "\nLink details: Entire sheet: " sheetName)
-                    dc     (rtos (getvar 'cdate) 2 20)
-                    newEd  ed)
-
-              (setq newEd (dl:set-dxf newEd 301 detail))
-              (setq newEd (dl:set-dxf newEd 302 conn))
-              (setq newEd (dl:set-dxf newEd 170 (dl:get-cdate-part dc 1 4)))
-              (setq newEd (dl:set-dxf newEd 171 (dl:get-cdate-part dc 5 2)))
-              (setq newEd (dl:set-dxf newEd 172 (dl:get-cdate-part dc 7 2)))
-              (setq newEd (dl:set-dxf newEd 173 (dl:get-cdate-part dc 10 2)))
-              (setq newEd (dl:set-dxf newEd 174 (dl:get-cdate-part dc 12 2)))
-              (setq newEd (dl:set-dxf newEd 175 (dl:get-cdate-part dc 14 2)))
-              (setq newEd (dl:set-dxf newEd 176 (dl:get-cdate-part dc 16 2)))
-
-              (if (entmod newEd)
-                (progn
-                  (entupd en)
-                  en
-                )
+              (setq ed (entget en))
+              (if (or (null ed) (/= (cdr (assoc 0 ed)) "DATALINK"))
                 nil
+                (progn
+                  (setq conn   (strcat filePath "!" sheetName)
+                        detail (strcat "Data Link\n" linkKey "\n" filePath "\nLink details: Entire sheet: " sheetName)
+                        dc     (rtos (getvar 'cdate) 2 20)
+                        newEd  ed)
+
+                  (setq newEd (dl:set-dxf newEd 301 detail))
+                  (setq newEd (dl:set-dxf newEd 302 conn))
+                  (setq newEd (dl:set-dxf newEd 91 dl:*safe-update-flag91*))
+                  (setq newEd (dl:set-dxf newEd 92 dl:*safe-update-flag92*))
+                  (setq newEd (dl:set-dxf newEd 170 (dl:get-cdate-part dc 1 4)))
+                  (setq newEd (dl:set-dxf newEd 171 (dl:get-cdate-part dc 5 2)))
+                  (setq newEd (dl:set-dxf newEd 172 (dl:get-cdate-part dc 7 2)))
+                  (setq newEd (dl:set-dxf newEd 173 (dl:get-cdate-part dc 10 2)))
+                  (setq newEd (dl:set-dxf newEd 174 (dl:get-cdate-part dc 12 2)))
+                  (setq newEd (dl:set-dxf newEd 175 (dl:get-cdate-part dc 14 2)))
+                  (setq newEd (dl:set-dxf newEd 176 (dl:get-cdate-part dc 16 2)))
+
+                  (if (entmod newEd)
+                    (progn
+                      (entupd en)
+                      en
+                    )
+                    nil
+                  )
+                )
               )
             )
           )
@@ -684,40 +728,54 @@
 )
 
 (defun dl:remove-datalink-by-key (dictEname linkKey / rec removed)
-  (setq rec (dictsearch dictEname linkKey))
-  (if rec
-    (progn
-      (setq removed (dictremove dictEname linkKey))
-      (if removed T nil)
-    )
+  (if (or (not (dl:ename-p dictEname))
+          (= (dl:trim linkKey) ""))
     nil
+    (progn
+      (setq rec (dictsearch dictEname linkKey))
+      (if rec
+        (progn
+          (setq removed (dictremove dictEname linkKey))
+          (if removed T nil)
+        )
+        nil
+      )
+    )
   )
 )
 
 (defun dl:get-datalink-flags (dictEname / rec en ed flag91 flag92)
-  (setq rec (dictnext dictEname T))
-  (while rec
-    (setq en (cdr (assoc 360 rec)))
-    (if en
-      (progn
-        (setq ed (entget en))
-        (if (and ed (= (cdr (assoc 0 ed)) "DATALINK"))
+  (if (not (dl:ename-p dictEname))
+    (list (dl:normalize-update-flag91 dl:*safe-update-flag91*)
+          dl:*safe-update-flag92*)
+    (progn
+      (setq rec (dictnext dictEname T))
+      (while rec
+        (setq en (or (cdr (assoc 360 rec))
+                     (cdr (assoc 350 rec))))
+        (if (dl:ename-p en)
           (progn
-            (if (assoc 91 ed)
-              (setq flag91 (cdr (assoc 91 ed)))
+            (setq ed (entget en))
+            (if (and ed (= (cdr (assoc 0 ed)) "DATALINK"))
+              (progn
+                (if (assoc 91 ed)
+                  (setq flag91 (cdr (assoc 91 ed)))
+                )
+                (if (assoc 92 ed)
+                  (setq flag92 (cdr (assoc 92 ed)))
+                )
+                (setq rec nil)
+              )
+              (setq rec (dictnext dictEname))
             )
-            (if (assoc 92 ed)
-              (setq flag92 (cdr (assoc 92 ed)))
-            )
-            (setq rec nil)
           )
           (setq rec (dictnext dictEname))
         )
       )
-      (setq rec (dictnext dictEname))
+      (list (dl:normalize-update-flag91 (if flag91 flag91 dl:*safe-update-flag91*))
+            (if flag92 flag92 dl:*safe-update-flag92*))
     )
   )
-  (list (if flag91 flag91 1179649) (if flag92 flag92 1))
 )
 
 (defun dl:create-datalink (linkName filePath sheetName / dictObj dictEname dc dlem edl tempTC
@@ -739,177 +797,195 @@
             flag91      (car flags)
             flag92      (cadr flags))
 
-      (if existingKey
-        (progn
-          ; 同名優先直接更新，避免 dictadd 在部分版本失敗
-          (setq updatedEn (dl:update-datalink-by-key dictEname existingKey filePath sheetName))
-          (if updatedEn
-            (progn
-              (setq dl:*last-create-error* nil)
-              (dl:release dictObj)
-              updatedEn
-            )
-            (progn
-              (setq linkName existingKey
-                    overwriteOK (dl:remove-datalink-by-key dictEname existingKey))
-            )
-          )
-        )
+      (if (not (dl:ename-p dictEname))
+        (setq dictEname (dl:get-datalink-dict-ename))
       )
-
-      (if (and (null updatedEn) (not overwriteOK))
+      (if (not (dl:ename-p dictEname))
         (progn
-          (setq dl:*last-create-error* "overwrite_remove_failed")
+          (setq dl:*last-create-error* "invalid_datalink_dict")
           (dl:release dictObj)
           nil
         )
-        (if updatedEn
-          updatedEn
-          (progn
-          (setq dlem   (entmakex '((0 . "DATALINK") (100 . "AcDbDataLink"))))
+        (progn
 
-          (setq connString (strcat filePath "!" sheetName)
-                detail     (strcat "Data Link\n" linkName "\n" filePath "\nLink details: Entire sheet: " sheetName))
+          (setq flags      (dl:get-datalink-flags dictEname)
+                existingKey (dl:find-datalink-key-ci-in-dict dictEname linkName)
+                flag91      (car flags)
+                flag92      (cadr flags))
 
-          (if (null dlem)
+          (if existingKey
             (progn
-              (setq dl:*last-create-error* "entmakex_datalink_failed")
+              ; 同名優先直接更新，避免 dictadd 在部分版本失敗
+              (setq updatedEn (dl:update-datalink-by-key dictEname existingKey filePath sheetName))
+              (if updatedEn
+                (progn
+                  (setq dl:*last-create-error* nil)
+                  (dl:release dictObj)
+                  updatedEn
+                )
+                (progn
+                  (setq linkName existingKey
+                        overwriteOK (dl:remove-datalink-by-key dictEname existingKey))
+                )
+              )
+            )
+          )
+
+          (if (and (null updatedEn) (not overwriteOK))
+            (progn
+              (setq dl:*last-create-error* "overwrite_remove_failed")
               (dl:release dictObj)
               nil
             )
-            (progn
-              (setq edl (entget dlem)
-                    tempTC
-                    (entmakex
-                      (list
-                        (cons 0 "TABLECONTENT")
-                        (cons 100 "AcDbLinkedData")
-                        (cons 100 "AcDbLinkedTableData")
-                        (cons 92 0)
-                        (cons 100 "AcDbFormattedTableData")
-                        (cons 300 "TABLEFORMAT")
-                        (cons 1 "TABLEFORMAT_BEGIN")
-                        (cons 90 4)
-                        (cons 170 0)
-                        (cons 309 "TABLEFORMAT_END")
-                        (cons 90 0)
-                        (cons 100 "AcDbTableContent")
-                      )
-                    )
-              )
+            (if updatedEn
+              updatedEn
+              (progn
+              (setq dlem   (entmakex '((0 . "DATALINK") (100 . "AcDbDataLink"))))
 
-              (if (null tempTC)
+              (setq connString (strcat filePath "!" sheetName)
+                    detail     (strcat "Data Link\n" linkName "\n" filePath "\nLink details: Entire sheet: " sheetName))
+
+              (if (null dlem)
                 (progn
-                  (setq dl:*last-create-error* "entmakex_tablecontent_failed")
-                  (entdel dlem)
+                  (setq dl:*last-create-error* "entmakex_datalink_failed")
                   (dl:release dictObj)
                   nil
                 )
                 (progn
-                  (entmod
-                    (subst (cons 330 dictEname)
-                           (assoc 330 (entget tempTC))
-                           (entget tempTC)))
-
-                  (setq dc (rtos (getvar 'cdate) 2 20)
-                        dataLinkList
-                        (list
-                          (assoc -1 edl)
-                          (cons 0 "DATALINK")
-                          (cons 102 "{ACAD_REACTORS")
-                          (cons 330 dictEname)
-                          (cons 102 "}")
-                          (cons 330 dictEname)
-                          (cons 100 "AcDbDataLink")
-                          (cons 1 "AcExcel")
-                          (cons 300 "")
-                          (cons 301 detail)
-                          (cons 302 connString)
-                          (cons 90 2)
-                          (cons 91 flag91)
-                          (cons 92 flag92)
-                          (cons 170 (dl:get-cdate-part dc 1 4))
-                          (cons 171 (dl:get-cdate-part dc 5 2))
-                          (cons 172 (dl:get-cdate-part dc 7 2))
-                          (cons 173 (dl:get-cdate-part dc 10 2))
-                          (cons 174 (dl:get-cdate-part dc 12 2))
-                          (cons 175 (dl:get-cdate-part dc 14 2))
-                          (cons 176 (dl:get-cdate-part dc 16 2))
-                          (cons 177 3)
-                          (cons 93 0)
-                          (cons 304 "")
-                          (cons 94 0)
-                          (cons 360 tempTC)
-                          (cons 305 "CUSTOMDATA")
-                          (cons 1 "DATAMAP_BEGIN")
-                          (cons 90 3)
-                          (cons 300 "ACEXCEL_UPDATEOPTIONS")
-                          (cons 301 "DATAMAP_VALUE")
-                          (cons 93 2)
-                          (cons 90 1)
-                          (cons 91 flag91)
-                          (cons 94 0)
-                          (cons 300 "")
-                          (cons 302 "")
-                          (cons 304 "ACVALUE_END")
-                          (cons 300 "ACEXCEL_CONNECTION_STRING")
-                          (cons 301 "DATAMAP_VALUE")
-                          (cons 93 2)
-                          (cons 90 4)
-                          (cons 1 connString)
-                          (cons 94 0)
-                          (cons 300 "")
-                          (cons 302 "")
-                          (cons 304 "ACVALUE_END")
-                          (cons 300 "ACEXCEL_SOURCEDATE")
-                          (cons 301 "DATAMAP_VALUE")
-                          (cons 93 2)
-                          (cons 90 1)
-                          (cons 92 16)
-                          (cons 94 0)
-                          (cons 300 "")
-                          (cons 302 "")
-                          (cons 304 "ACVALUE_END")
-                          (cons 309 "DATAMAP_END")
+                  (setq edl (entget dlem)
+                        tempTC
+                        (entmakex
+                          (list
+                            (cons 0 "TABLECONTENT")
+                            (cons 100 "AcDbLinkedData")
+                            (cons 100 "AcDbLinkedTableData")
+                            (cons 92 0)
+                            (cons 100 "AcDbFormattedTableData")
+                            (cons 300 "TABLEFORMAT")
+                            (cons 1 "TABLEFORMAT_BEGIN")
+                            (cons 90 4)
+                            (cons 170 0)
+                            (cons 309 "TABLEFORMAT_END")
+                            (cons 90 0)
+                            (cons 100 "AcDbTableContent")
+                          )
                         )
                   )
 
-                  (setq okEntmod (entmod dataLinkList))
-                  (if okEntmod
+                  (if (null tempTC)
                     (progn
-                      (setq okDictadd (dictadd dictEname linkName dlem))
-                      (if (null okDictadd)
+                      (setq dl:*last-create-error* "entmakex_tablecontent_failed")
+                      (entdel dlem)
+                      (dl:release dictObj)
+                      nil
+                    )
+                    (progn
+                      (entmod
+                        (subst (cons 330 dictEname)
+                               (assoc 330 (entget tempTC))
+                               (entget tempTC)))
+
+                      (setq dc (rtos (getvar 'cdate) 2 20)
+                            dataLinkList
+                            (list
+                              (assoc -1 edl)
+                              (cons 0 "DATALINK")
+                              (cons 102 "{ACAD_REACTORS")
+                              (cons 330 dictEname)
+                              (cons 102 "}")
+                              (cons 330 dictEname)
+                              (cons 100 "AcDbDataLink")
+                              (cons 1 "AcExcel")
+                              (cons 300 "")
+                              (cons 301 detail)
+                              (cons 302 connString)
+                              (cons 90 2)
+                              (cons 91 flag91)
+                              (cons 92 flag92)
+                              (cons 170 (dl:get-cdate-part dc 1 4))
+                              (cons 171 (dl:get-cdate-part dc 5 2))
+                              (cons 172 (dl:get-cdate-part dc 7 2))
+                              (cons 173 (dl:get-cdate-part dc 10 2))
+                              (cons 174 (dl:get-cdate-part dc 12 2))
+                              (cons 175 (dl:get-cdate-part dc 14 2))
+                              (cons 176 (dl:get-cdate-part dc 16 2))
+                              (cons 177 3)
+                              (cons 93 0)
+                              (cons 304 "")
+                              (cons 94 0)
+                              (cons 360 tempTC)
+                              (cons 305 "CUSTOMDATA")
+                              (cons 1 "DATAMAP_BEGIN")
+                              (cons 90 3)
+                              (cons 300 "ACEXCEL_UPDATEOPTIONS")
+                              (cons 301 "DATAMAP_VALUE")
+                              (cons 93 2)
+                              (cons 90 1)
+                              (cons 91 flag91)
+                              (cons 94 0)
+                              (cons 300 "")
+                              (cons 302 "")
+                              (cons 304 "ACVALUE_END")
+                              (cons 300 "ACEXCEL_CONNECTION_STRING")
+                              (cons 301 "DATAMAP_VALUE")
+                              (cons 93 2)
+                              (cons 90 4)
+                              (cons 1 connString)
+                              (cons 94 0)
+                              (cons 300 "")
+                              (cons 302 "")
+                              (cons 304 "ACVALUE_END")
+                              (cons 300 "ACEXCEL_SOURCEDATE")
+                              (cons 301 "DATAMAP_VALUE")
+                              (cons 93 2)
+                              (cons 90 1)
+                              (cons 92 16)
+                              (cons 94 0)
+                              (cons 300 "")
+                              (cons 302 "")
+                              (cons 304 "ACVALUE_END")
+                              (cons 309 "DATAMAP_END")
+                            )
+                      )
+
+                      (setq okEntmod (entmod dataLinkList))
+                      (if okEntmod
                         (progn
-                          (if (dl:remove-datalink-by-key dictEname linkName)
-                            (setq okDictadd (dictadd dictEname linkName dlem))
+                          (setq okDictadd (dictadd dictEname linkName dlem))
+                          (if (null okDictadd)
+                            (progn
+                              (if (dl:remove-datalink-by-key dictEname linkName)
+                                (setq okDictadd (dictadd dictEname linkName dlem))
+                              )
+                            )
+                          )
+                          (if okDictadd
+                            (progn
+                              (setq dl:*last-create-error* nil)
+                              (dl:release dictObj)
+                              dlem
+                            )
+                            (progn
+                              (setq dl:*last-create-error* "dictadd_failed")
+                              (entdel dlem)
+                              (dl:release dictObj)
+                              nil
+                            )
                           )
                         )
-                      )
-                      (if okDictadd
                         (progn
-                          (setq dl:*last-create-error* nil)
-                          (dl:release dictObj)
-                          dlem
-                        )
-                        (progn
-                          (setq dl:*last-create-error* "dictadd_failed")
+                          (setq dl:*last-create-error* "entmod_failed")
                           (entdel dlem)
                           (dl:release dictObj)
                           nil
                         )
                       )
                     )
-                    (progn
-                      (setq dl:*last-create-error* "entmod_failed")
-                      (entdel dlem)
-                      (dl:release dictObj)
-                      nil
-                    )
                   )
                 )
               )
+              )
             )
-          )
           )
         )
       )
@@ -1069,6 +1145,73 @@
   (c:DLAUTO)
 )
 
+(defun c:DLAUTOSHEETS (/ filePath linkPath sheetNames sheetName linkName
+                        okList failList)
+  (vl-load-com)
+  (setvar "cmdecho" 0)
+
+  (setq filePath (getfiled "選擇 Excel 來源檔案" (getvar "dwgprefix") "xlsx;xls;csv" 0))
+  (if (null filePath)
+    (prompt "\n未選取 Excel 檔案，已取消。")
+    (progn
+      (setq linkPath (dl:pick-link-path filePath))
+      (setq sheetNames (dl:get-sheet-names filePath))
+      (if (or (null sheetNames) (null (car sheetNames)))
+        (prompt "\n無法讀取 Excel 分頁，請確認已安裝 Excel 且檔案可正常開啟。")
+        (progn
+          (setq okList '()
+                failList '())
+
+          (foreach sheetName sheetNames
+            (setq linkName sheetName)
+            (if (= (dl:trim linkName) "")
+              (setq failList (cons "(空白分頁名稱)" failList))
+              (if (dl:create-datalink linkName linkPath sheetName)
+                (setq okList (cons (strcat sheetName " -> " linkName) okList))
+                (setq failList
+                      (cons (strcat sheetName " (" (if dl:*last-create-error* dl:*last-create-error* "unknown") ")")
+                            failList))
+              )
+            )
+          )
+
+          (prompt (strcat "\n全部分頁建立完成，總分頁數: " (itoa (length sheetNames))))
+          (prompt (strcat "\n成功: " (itoa (length okList))
+                          "，失敗: " (itoa (length failList))))
+          (prompt (strcat "\n來源檔案(相對路徑): " linkPath))
+          (prompt "\nData Link 名稱與 Excel 分頁名稱一致；同名 Data Link 會自動覆蓋舊資料。")
+
+          (if okList
+            (progn
+              (prompt "\n--- 成功清單 ---")
+              (foreach x (reverse okList)
+                (prompt (strcat "\n" x))
+              )
+            )
+          )
+          (if failList
+            (progn
+              (prompt "\n--- 建立失敗 ---")
+              (foreach x (reverse failList)
+                (prompt (strcat "\n" x))
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+  (princ)
+)
+
+(defun c:AUTODATALINKSHEETS ()
+  (c:DLAUTOSHEETS)
+)
+
+(defun c:DLAUTOALLSHEETS ()
+  (c:DLAUTOSHEETS)
+)
+
 (defun c:DLAUTOBATCH (/ filePath linkPath sheetNames ss panelNames
                         panel sheetName linkName
                         okList failCreate noSheetList)
@@ -1159,5 +1302,5 @@
   (c:DLAUTOBATCH)
 )
 
-(princ "\nDLAUTO / AUTODATALINK / DLAUTOBATCH / AUTODATALINKBATCH / DLLINKLIST / AUTODATALINKLIST / DATALINKLIST / DATALINKLISTT / DLLINKLISTDBG 載入完成。")
+(princ "\nDLAUTO / AUTODATALINK / DLAUTOSHEETS / AUTODATALINKSHEETS / DLAUTOALLSHEETS / DLAUTOBATCH / AUTODATALINKBATCH / DLLINKLIST / AUTODATALINKLIST / DATALINKLIST / DATALINKLISTT / DLLINKLISTDBG 載入完成。")
 (princ)

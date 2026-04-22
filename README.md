@@ -15,3 +15,16 @@ datalink_auto :
        選 Excel 後，框選多個盤名文字（TEXT/MTEXT/ATTRIB/ATTDEF），會自動逐一建立並回報結果
     9. 若要檢查目前 DWG 內 Data Link 名稱，可用 `DLLINKLIST` / `AUTODATALINKLIST` / `DATALINKLIST` / `DATALINKLISTT`
     10. 若清單異常為空，可用 `DLLINKLISTDBG` 顯示各種掃描來源的偵錯結果
+    11. 若要一次建立 Excel 全部分頁的 Data Link，可用 `DLAUTOSHEETS` / `AUTODATALINKSHEETS` / `DLAUTOALLSHEETS`：
+       會用「分頁名稱」當 Data Link 名稱，且同名 Data Link 會自動覆蓋
+    12. 建立 Data Link 時，程式會以唯讀模式讀取 Excel，並使用「不回寫來源檔 + 保留 Excel 格式(含合併儲存格)」設定
+
+datalink_table_auto :
+    1. 載入 `datalink_auto.lsp` 與 `datalink_table_auto.lsp`
+    2. 執行 `DLTABLEAUTO` / `AUTODATALINKTABLE` / `DLLINKTABLE`
+    3. 可選擇建立模式：
+       `指定(S)`：輸入 Data Link 名稱或序號，建立單一表格
+       `全部(A)`：依 `DLLINKLIST` 可取得的 Data Link 清單逐一建立
+    4. `全部(A)` 會一張一張建立，且每張表格插入點 X 方向固定間距 `5000 mm`，避免表格重疊
+    5. 為避免誤拆合併列，建表後「預設不自動刪空白列」
+       若確定你的表格沒有合併列，才可手動設 `dlt:*remove-empty-rows-after-create*` 為 `T` 啟用刪除
