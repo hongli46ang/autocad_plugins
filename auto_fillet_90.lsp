@@ -372,7 +372,7 @@
 )
 
 (defun af:draw-pline-and-wait ()
-  ; keep yielding PAUSE until PLINE is fully finished by user
+  ; interactive PLINE loop, ESC will be handled by caller *error*
   (command "_.PLINE")
   (while (/= 0 (logand 1 (getvar "CMDACTIVE")))
     ; enforce ORTHO during PL90FA drawing
@@ -394,10 +394,14 @@
       (setq *error* oldErr)
       (setq *error* nil)
     )
-    (if (and msg
-             (/= msg "Function cancelled")
-             (/= msg "quit / exit abort"))
-      (prompt (strcat "\n錯誤: " msg))
+    (cond
+      ((or (= msg "Function cancelled")
+           (= msg "quit / exit abort"))
+       (prompt "\nPL90FA 已取消。")
+      )
+      ((and msg (/= msg ""))
+       (prompt (strcat "\n錯誤: " msg))
+      )
     )
     (princ)
   )
@@ -409,8 +413,8 @@
 
   (prompt "\n開始繪製 PLINE，結束後會自動套用 90 度圓角...")
   (af:draw-pline-and-wait)
-  (setq pl (af:find-new-polyline before))
 
+  (setq pl (af:find-new-polyline before))
   (cond
     ((null pl)
       (prompt "\n未找到剛建立的 polyline。")
