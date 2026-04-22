@@ -5,6 +5,14 @@
 (setq dlt:*remove-empty-rows-after-create* nil)
 (setq dlt:*last-create-failure-reason* nil)
 (setq dlt:*has-command-s* nil)
+(setq dlt:*cell-width* 2025.0)
+(setq dlt:*cell-height* 486.0)
+(setq dlt:*text-height* 200.0)
+(setq dlt:*text-style-name* "DLT_MSJH")
+(setq dlt:*text-font-file* "msjh.ttc")
+(setq dlt:*text-font-candidates* '("msjh.ttc" "MSJH.TTC" "msjh.ttf" "MSJH.TTF"))
+(setq dlt:*msjh-font-resolved* nil)
+(setq dlt:*msjh-warning-shown* nil)
 
 (defun dlt:trim (s)
   (if s
@@ -60,6 +68,13 @@
      )
     )
     (T nil)
+  )
+)
+
+(defun dlt:set-dxf (ed code val / old)
+  (if (setq old (assoc code ed))
+    (subst (cons code val) old ed)
+    (append ed (list (cons code val)))
   )
 )
 
@@ -211,6 +226,170 @@
   removed
 )
 
+(defun dlt:resolve-msjh-font-file (/ found)
+  (if (and dlt:*msjh-font-resolved* (/= dlt:*msjh-font-resolved* ""))
+    dlt:*msjh-font-resolved*
+    (progn
+      (setq found
+            (vl-some
+              '(lambda (f)
+                 (if (or (findfile f)
+                         (findfile (strcat "C:\\Windows\\Fonts\\" f)))
+                   f
+                 )
+               )
+              dlt:*text-font-candidates*))
+      (if found
+        (progn
+          (setq dlt:*msjh-font-resolved* found)
+          found
+        )
+        nil
+      )
+    )
+  )
+)
+
+(defun dlt:ensure-msjh-text-style (/ stEn stEd fontFile)
+  (setq fontFile (dlt:resolve-msjh-font-file))
+  (if (null fontFile)
+    nil
+    (progn
+      (setq stEn (tblobjname "STYLE" dlt:*text-style-name*))
+      (if (null stEn)
+        (progn
+          (entmake
+            (list
+              '(0 . "STYLE")
+              (cons 2 dlt:*text-style-name*)
+              '(70 . 0)
+              '(40 . 0.0)
+              '(41 . 1.0)
+              '(50 . 0.0)
+              '(71 . 0)
+              '(42 . 2.5)
+              (cons 3 fontFile)
+              '(4 . "")
+            )
+          )
+          (setq stEn (tblobjname "STYLE" dlt:*text-style-name*))
+        )
+      )
+      (if stEn
+        (progn
+          (setq stEd (entget stEn))
+          (setq stEd (dlt:set-dxf stEd 3 fontFile))
+          (setq stEd (dlt:set-dxf stEd 4 ""))
+          (setq stEd (dlt:set-dxf stEd 40 0.0))
+          (setq stEd (dlt:set-dxf stEd 41 1.0))
+          (setq stEd (dlt:set-dxf stEd 50 0.0))
+          (setq stEd (dlt:set-dxf stEd 71 0))
+          (entmod stEd)
+          (entupd stEn)
+          T
+        )
+        nil
+      )
+    )
+  )
+)
+
+(defun dlt:set-entity-color-bylayer (ename / ed)
+  (if ename
+    (progn
+      (setq ed (entget ename))
+      (if ed
+        (progn
+          (setq ed
+                (vl-remove-if
+                  '(lambda (x) (or (= (car x) 420) (= (car x) 430) (= (car x) 440)))
+                  ed))
+          (setq ed (dlt:set-dxf ed 62 256))
+          (entmod ed)
+          (entupd ename)
+        )
+      )
+    )
+  )
+  T
+)
+
+(defun dlt:safe-invoke-method (obj method args / ret)
+  (setq ret (vl-catch-all-apply 'vlax-invoke-method (append (list obj method) args)))
+  (if (vl-catch-all-error-p ret)
+    nil
+    T
+  )
+)
+
+(defun dlt:apply-table-format (tableEname / tableObj rows cols row col)
+  (setq tableObj (if tableEname (vlax-ename->vla-object tableEname)))
+  (if (and tableObj (= (vla-get-ObjectName tableObj) "AcDbTable"))
+    (progn
+      ; 表格物件顏色改為 ByLayer（邊框顏色跟隨圖層）
+      (vl-catch-all-apply 'vla-put-Color (list tableObj 256))
+
+      (setq rows (vlax-get-property tableObj 'Rows)
+            cols (vlax-get-property tableObj 'Columns))
+
+      ; 套用欄寬
+      (setq col 0)
+      (while (< col cols)
+        (dlt:safe-invoke-method tableObj 'SetColumnWidth (list col dlt:*cell-width*))
+        (setq col (1+ col))
+      )
+
+      ; 套用列高
+      (setq row 0)
+      (while (< row rows)
+        (dlt:safe-invoke-method tableObj 'SetRowHeight (list row dlt:*cell-height*))
+        (setq row (1+ row))
+      )
+
+      ; 優先逐儲存格設定文字高；若版本不支援，再回退到列型設定
+      (if (vlax-method-applicable-p tableObj 'SetCellTextHeight)
+        (progn
+          (setq row 0)
+          (while (< row rows)
+            (setq col 0)
+            (while (< col cols)
+              (dlt:safe-invoke-method tableObj 'SetCellTextHeight (list row col dlt:*text-height*))
+              (setq col (1+ col))
+            )
+            (setq row (1+ row))
+          )
+        )
+        (progn
+          (dlt:safe-invoke-method tableObj 'SetTextHeight (list 1 dlt:*text-height*)) ; Title
+          (dlt:safe-invoke-method tableObj 'SetTextHeight (list 2 dlt:*text-height*)) ; Header
+          (dlt:safe-invoke-method tableObj 'SetTextHeight (list 4 dlt:*text-height*)) ; Data
+        )
+      )
+
+      ; 文字樣式統一為微軟正黑體
+      (if (dlt:ensure-msjh-text-style)
+        (progn
+          (dlt:safe-invoke-method tableObj 'SetTextStyle (list 1 dlt:*text-style-name*)) ; Title
+          (dlt:safe-invoke-method tableObj 'SetTextStyle (list 2 dlt:*text-style-name*)) ; Header
+          (dlt:safe-invoke-method tableObj 'SetTextStyle (list 4 dlt:*text-style-name*)) ; Data
+        )
+        (if (not dlt:*msjh-warning-shown*)
+          (progn
+            (prompt "\n警告：找不到微軟正黑體字型檔(msjh.ttc)，本次未強制套用該字型。")
+            (setq dlt:*msjh-warning-shown* T)
+          )
+        )
+      )
+
+      (dlt:safe-invoke-method tableObj 'Update '())
+    )
+  )
+  (if tableObj (vlax-release-object tableObj))
+  ; 再次清除 true color override，確保是 ByLayer
+  (dlt:set-entity-color-bylayer tableEname)
+  T
+)
+
 (defun dlt:try-create-table-by-link (linkName insPt / patterns args ret ok entBefore newTable)
   (setq ok nil)
   (setq dlt:*last-removed-empty-rows* 0)
@@ -250,7 +429,10 @@
                 )
                 (setq newTable (dlt:get-new-table-ename-after entBefore))
                 (if newTable
-                  (setq ok T)
+                  (progn
+                    (setq ok T)
+                    (dlt:apply-table-format newTable)
+                  )
                   (setq dlt:*last-create-failure-reason* "no_table_created")
                 )
               )
