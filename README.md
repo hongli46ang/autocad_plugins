@@ -22,9 +22,7 @@ datalink_auto :
 datalink_table_auto :
     1. 載入 `datalink_auto.lsp` 與 `datalink_table_auto.lsp`
     2. 執行 `DLTABLEAUTO` / `AUTODATALINKTABLE` / `DLLINKTABLE`
-    3. 可選擇建立模式：
-       `指定(S)`：輸入 Data Link 名稱或序號，建立單一表格
-       `全部(A)`：依 `DLLINKLIST` 可取得的 Data Link 清單逐一建立
-    4. `全部(A)` 會一張一張建立，且每張表格插入點 X 方向固定間距 `5000 mm`，避免表格重疊
-    5. 為避免誤拆合併列，建表後「預設不自動刪空白列」
+    3. 僅支援「指定 Data Link 建表」：
+       輸入 Data Link 名稱或序號，建立單一表格
+    4. 為避免誤拆合併列，建表後「預設不自動刪空白列」
        若確定你的表格沒有合併列，才可手動設 `dlt:*remove-empty-rows-after-create*` 為 `T` 啟用刪除

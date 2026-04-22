@@ -1,9 +1,10 @@
 (vl-load-com)
 
-(setq dlt:*table-gap* 5000.0)
 (setq dlt:*last-removed-empty-rows* 0)
 ; 預設關閉：避免刪空白列時誤拆到合併列
 (setq dlt:*remove-empty-rows-after-create* nil)
+(setq dlt:*last-create-failure-reason* nil)
+(setq dlt:*has-command-s* nil)
 
 (defun dlt:trim (s)
   (if s
@@ -70,9 +71,33 @@
   )
 )
 
-(defun dlt:flush-command ()
-  (while (> (getvar "CMDACTIVE") 0)
-    (command "")
+(defun dlt:init-command-s-flag ()
+  ; atoms-family 1 為已定義函數符號，避免直接呼叫不存在函數
+  (if (vl-position "COMMAND-S" (atoms-family 1))
+    (setq dlt:*has-command-s* T)
+    (setq dlt:*has-command-s* nil)
+  )
+)
+
+(defun dlt:run-safe-command (args / ret)
+  ; 優先用 command-s，避免互動命令卡在等待輸入
+  (if dlt:*has-command-s*
+    (vl-catch-all-apply 'command-s args)
+    'dlt_no_command_s
+  )
+)
+
+(defun dlt:flush-command (/ tries)
+  (setq tries 0)
+  (while (and (> (getvar "CMDACTIVE") 0) (< tries 8))
+    (if dlt:*has-command-s*
+      (vl-catch-all-apply 'command-s (list (strcat (chr 3) (chr 3))))
+      (setq tries 8)
+    )
+    (setq tries (1+ tries))
+  )
+  (if (> (getvar "CMDACTIVE") 0)
+    (setq dlt:*last-create-failure-reason* "cancel_incomplete")
   )
 )
 
@@ -156,45 +181,67 @@
 (defun dlt:try-create-table-by-link (linkName insPt / patterns args ret ok entBefore newTable)
   (setq ok nil)
   (setq dlt:*last-removed-empty-rows* 0)
-  (setq entBefore (entlast))
-  (setq patterns
-        (list
-          (list "_.-TABLE" "_FromDataLink" linkName insPt)
-          (list "_.-TABLE" "_FromDataLink" linkName insPt "")
-          (list "_.-TABLE" "_FromDataLink" "_Name" linkName insPt)
-          (list "_.-TABLE" "_FromDataLink" "_Name" linkName insPt "")
-          (list "_.TABLE" "_FromDataLink" linkName insPt)
-          (list "_.TABLE" "_FromDataLink" linkName insPt "")
-          (list "_.TABLE" "_FromDataLink" "_Name" linkName insPt)
-          (list "_.TABLE" "_FromDataLink" "_Name" linkName insPt "")
-        )
-  )
-  (foreach args patterns
-    (if (not ok)
-      (progn
-        (setq ret (vl-catch-all-apply 'vl-cmdf args))
-        (if (vl-catch-all-error-p ret)
-          (dlt:flush-command)
-          (setq ok T)
-        )
-      )
-    )
-  )
-  (if (and ok dlt:*remove-empty-rows-after-create*)
-    (progn
-      (setq newTable (dlt:get-new-table-ename-after entBefore))
-      (if newTable
-        (setq dlt:*last-removed-empty-rows*
-              (dlt:remove-empty-rows-from-table newTable))
-      )
-    )
-  )
-  ok
-)
+  (setq dlt:*last-create-failure-reason* nil)
 
-(defun dlt:offset-point-x (pt dx / z)
-  (setq z (if (caddr pt) (caddr pt) 0.0))
-  (list (+ (car pt) dx) (cadr pt) z)
+  (if (not dlt:*has-command-s*)
+    (progn
+      (setq dlt:*last-create-failure-reason* "command_s_unavailable")
+      nil
+    )
+    (progn
+      (dlt:flush-command)
+      (setq entBefore (entlast))
+      (setq patterns
+            (list
+              ; 依你目前介面的實際流程：
+              ; 1) -TABLE 2) 在「行數」題按 L(資料連結) 3) 輸入 Data Link 名稱 4) 指定插入點
+              (list "_.-TABLE" "_L" linkName insPt)
+              (list "_.-TABLE" "_L" linkName insPt "")
+              (list "_.-TABLE" "L" linkName insPt)
+              (list "_.-TABLE" "L" linkName insPt "")
+            )
+      )
+
+      (foreach args patterns
+        (if (not ok)
+          (progn
+            (setq ret (dlt:run-safe-command args))
+            (if (vl-catch-all-error-p ret)
+              (progn
+                (setq dlt:*last-create-failure-reason* "command_error")
+                (dlt:flush-command)
+              )
+              (progn
+                (if (> (getvar "CMDACTIVE") 0)
+                  (dlt:flush-command)
+                )
+                (setq newTable (dlt:get-new-table-ename-after entBefore))
+                (if newTable
+                  (setq ok T)
+                  (setq dlt:*last-create-failure-reason* "no_table_created")
+                )
+              )
+            )
+          )
+        )
+      )
+
+      (if (and ok dlt:*remove-empty-rows-after-create*)
+        (progn
+          (setq newTable (dlt:get-new-table-ename-after entBefore))
+          (if newTable
+            (setq dlt:*last-removed-empty-rows*
+                  (dlt:remove-empty-rows-from-table newTable))
+          )
+        )
+      )
+
+      (if (and (not ok) (null dlt:*last-create-failure-reason*))
+        (setq dlt:*last-create-failure-reason* "unknown")
+      )
+      ok
+    )
+  )
 )
 
 (defun dlt:get-datalink-names-safe (/ res)
@@ -231,58 +278,15 @@
               (prompt (strcat "\n已自動移除空白列: " (itoa dlt:*last-removed-empty-rows*)))
             )
           )
-          (prompt (strcat "\n建立表格失敗: " linkName))
-        )
-      )
-    )
-  )
-)
-
-(defun dlt:create-all-link-tables (names / basePt idx linkName insPt okList failList okMsg)
-  (setq basePt (getpoint "\n指定第一張表格插入點: "))
-  (if (null basePt)
-    (prompt "\n未指定插入點，已取消。")
-    (progn
-      (setq idx 0
-            okList '()
-            failList '())
-      (foreach linkName names
-        (setq insPt (dlt:offset-point-x basePt (* idx dlt:*table-gap*)))
-        (if (dlt:try-create-table-by-link linkName insPt)
           (progn
-            (setq okMsg linkName)
-            (if (> dlt:*last-removed-empty-rows* 0)
-              (setq okMsg
-                    (strcat okMsg
-                            " (移除空白列: "
-                            (itoa dlt:*last-removed-empty-rows*)
-                            ")"))
+            (prompt (strcat "\n建立表格失敗: " linkName))
+            (prompt (strcat "\n失敗原因: " dlt:*last-create-failure-reason*))
+            (if (= dlt:*last-create-failure-reason* "no_table_created")
+              (prompt "\n此版本可能不支援以命令列直接由 Data Link 建表，請用 TABLE 對話框手動選「From a data link」。")
             )
-            (setq okList (append okList (list okMsg)))
-          )
-          (setq failList (append failList (list linkName)))
-        )
-        (setq idx (1+ idx))
-      )
-
-      (prompt (strcat "\n批量建立完成，總數: " (itoa (length names))))
-      (prompt (strcat "\n成功: " (itoa (length okList))
-                      "，失敗: " (itoa (length failList))))
-      (prompt (strcat "\n表格間距: " (rtos dlt:*table-gap* 2 0) " mm (X方向)"))
-
-      (if okList
-        (progn
-          (prompt "\n--- 建立成功 ---")
-          (foreach x okList
-            (prompt (strcat "\n" x))
-          )
-        )
-      )
-      (if failList
-        (progn
-          (prompt "\n--- 建立失敗 ---")
-          (foreach x failList
-            (prompt (strcat "\n" x))
+            (if (= dlt:*last-create-failure-reason* "command_s_unavailable")
+              (prompt "\n目前環境不支援 command-s，為避免卡住，已停止自動建表。")
+            )
           )
         )
       )
@@ -290,9 +294,10 @@
   )
 )
 
-(defun c:DLTABLEAUTO (/ names mode)
+(defun c:DLTABLEAUTO (/ names)
   (vl-load-com)
   (setvar "cmdecho" 0)
+  (dlt:init-command-s-flag)
 
   (setq names (dlt:get-datalink-names-safe))
   (if (eq names 'dlt_error)
@@ -300,11 +305,9 @@
     (if (null names)
       (prompt "\n目前找不到任何 Data Link。")
       (progn
-        (initget "S A")
-        (setq mode (getkword "\n建立模式 [指定(S)/全部(A)] <S>: "))
-        (if (or (null mode) (= mode "S"))
+        (if (not dlt:*has-command-s*)
+          (prompt "\n此 AutoCAD/LISP 環境不支援 command-s，為避免 TABLE 指令卡住，已停用 DLTABLEAUTO。")
           (dlt:create-selected-link-table names)
-          (dlt:create-all-link-tables names)
         )
       )
     )
