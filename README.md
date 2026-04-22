@@ -23,6 +23,7 @@ datalink_table_auto :
     1. 載入 `datalink_auto.lsp` 與 `datalink_table_auto.lsp`
     2. 執行 `DLTABLEAUTO` / `AUTODATALINKTABLE` / `DLLINKTABLE`
     3. 僅支援「指定 Data Link 建表」：
-       輸入 Data Link 名稱或序號，建立單一表格
+       預設先「選取圖面文字（TEXT/MTEXT/ATTRIB/ATTDEF）」指定 Data Link 名稱；
+       按 Enter/Space 不選取時，會改為手動輸入 Data Link 名稱/序號
     4. 為避免誤拆合併列，建表後「預設不自動刪空白列」
        若確定你的表格沒有合併列，才可手動設 `dlt:*remove-empty-rows-after-create*` 為 `T` 啟用刪除

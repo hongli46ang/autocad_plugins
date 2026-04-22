@@ -51,6 +51,7 @@
   (setq txt (dlt:trim input))
   (cond
     ((= txt "") nil)
+    ((dlt:find-ci txt names))
     ((dlt:digits-only-p txt)
      (setq idx (atoi txt))
      (if (and (> idx 0) (<= idx (length names)))
@@ -58,7 +59,7 @@
        nil
      )
     )
-    (T (dlt:find-ci txt names))
+    (T nil)
   )
 )
 
@@ -120,6 +121,38 @@
     ""
     (dlt:trim v)
   )
+)
+
+(defun dlt:get-text-from-entity (ename / obj oname txt)
+  (setq txt "")
+  (if ename
+    (progn
+      (setq obj (vlax-ename->vla-object ename))
+      (if obj
+        (progn
+          (setq oname (vla-get-ObjectName obj))
+          (if (wcmatch oname "AcDbText,AcDbMText,AcDbAttributeDefinition,AcDbAttribute")
+            (setq txt (vla-get-TextString obj))
+          )
+        )
+      )
+    )
+  )
+  (dlt:trim txt)
+)
+
+(defun dlt:get-input-by-pick (/ ent ename txt)
+  (setq txt "")
+  (if (setq ent (entsel "\n選取作為 Data Link 名稱的文字物件 (Enter/Space改手動輸入): "))
+    (progn
+      (setq ename (car ent)
+            txt   (dlt:get-text-from-entity ename))
+      (if (= txt "")
+        (prompt "\n所選物件不是可用文字（TEXT/MTEXT/ATTRIB/ATTDEF）或內容為空。")
+      )
+    )
+  )
+  txt
 )
 
 (defun dlt:cell-merged-p (tableObj row col / v)
@@ -261,9 +294,16 @@
   )
 )
 
-(defun dlt:create-selected-link-table (names / input linkName insPt)
+(defun dlt:create-selected-link-table (names / input pickedText linkName insPt)
   (dlt:print-link-names names)
-  (setq input (getstring T "\n輸入要建立表格的 Data Link 名稱或序號: "))
+  (setq pickedText (dlt:get-input-by-pick))
+  (if (/= (dlt:trim pickedText) "")
+    (progn
+      (setq input pickedText)
+      (prompt (strcat "\n已選取文字: " pickedText))
+    )
+    (setq input (getstring T "\n輸入要建立表格的 Data Link 名稱或序號: "))
+  )
   (setq linkName (dlt:resolve-link-name input names))
   (if (null linkName)
     (prompt "\n找不到指定的 Data Link，已取消。")
