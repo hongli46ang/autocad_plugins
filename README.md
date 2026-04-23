@@ -31,6 +31,16 @@ datalink_table_auto :
        若系統找不到 `msjh.ttc`，程式會跳過強制字型並提示警告
     5. 為避免誤拆合併列，建表後「預設不自動刪空白列」
        若確定你的表格沒有合併列，才可手動設 `dlt:*remove-empty-rows-after-create*` 為 `T` 啟用刪除
+    6. 批次重綁既有表格可用 `DLTABLEREBIND` / `DLTABLEREBINDBATCH` / `AUTODATALINKTABLEREBIND` / `DLLINKTABLEREBIND`
+       可先框選既有表格；若直接 Enter，會抓目前頁籤全部 ACAD_TABLE
+       程式會優先讀取舊表原本綁定的 Data Link 名稱來對應同名目標；讀不到時才回退用表格內容推斷
+       「鄰近文字比對」僅接受目前 DWG 已存在的 Data Link 名稱，並採用邊界安全的包含比對（例如 `盤名:R11A1` 可對應 `R11A1`）
+       若不希望使用鄰近文字回退，可先設 `(setq dlt:*enable-near-text-fallback* nil)`
+       重綁方式為「新建同名 Data Link 表格 + 刪除舊表格」
+       完成後會列出成功/失敗/略過清單
+    7. 半自動重綁可用 `DLTABLEREBINDMANUAL` / `DLTABLEREBINDPICK` / `AUTODATALINKTABLEREBINDPICK` / `DLLINKTABLEREBINDPICK`
+       逐張操作：先選舊表，再選盤名文字（或手動輸入 Data Link 名稱/序號）
+       適合舊表已是靜態表、無法自動辨識對應 Data Link 的情境
 
 workstation_auto_connect :
     1. 載入 `workstation_auto_connect.lsp`
