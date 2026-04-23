@@ -8,7 +8,10 @@
 (setq dlt:*cell-width* 2025.0)
 (setq dlt:*cell-height* 486.0)
 (setq dlt:*text-height* 200.0)
-(setq dlt:*text-style-name* "DLT_MSJH")
+(setq dlt:*text-style-name* "Standard")
+(setq dlt:*cell-h-margin* 2.0)
+(setq dlt:*cell-v-margin* 2.0)
+(setq dlt:*cell-align-middle-center* 5)
 (setq dlt:*text-font-file* "msjh.ttc")
 (setq dlt:*text-font-candidates* '("msjh.ttc" "MSJH.TTC" "msjh.ttf" "MSJH.TTF"))
 (setq dlt:*msjh-font-resolved* nil)
@@ -294,7 +297,7 @@
   )
 )
 
-(defun dlt:set-entity-color-bylayer (ename / ed)
+(defun dlt:set-entity-table-props (ename / ed)
   (if ename
     (progn
       (setq ed (entget ename))
@@ -304,7 +307,12 @@
                 (vl-remove-if
                   '(lambda (x) (or (= (car x) 420) (= (car x) 430) (= (car x) 440)))
                   ed))
+          ; 框線顏色：ByLayer
           (setq ed (dlt:set-dxf ed 62 256))
+          ; 框線線型：ByBlock
+          (setq ed (dlt:set-dxf ed 6 "ByBlock"))
+          ; 框線線粗：ByBlock
+          (setq ed (dlt:set-dxf ed 370 -2))
           (entmod ed)
           (entupd ename)
         )
@@ -322,15 +330,79 @@
   )
 )
 
+(defun dlt:safe-put-property (obj prop value / ret)
+  (setq ret (vl-catch-all-apply 'vlax-put-property (list obj prop value)))
+  (if (vl-catch-all-error-p ret)
+    nil
+    T
+  )
+)
+
+(defun dlt:apply-gridcolor-bylayer (tableObj rows cols / clr row col)
+  ; 先嘗試用 AcCmColor 物件設定（較完整）
+  (setq clr (vl-catch-all-apply 'vla-get-TrueColor (list tableObj)))
+  (if (not (vl-catch-all-error-p clr))
+    (progn
+      (dlt:safe-put-property clr 'ColorIndex 256)
+
+      ; 列型層級（Title/Header/Data）框線顏色
+      (dlt:safe-invoke-method tableObj 'SetGridColor (list 1 63 clr))
+      (dlt:safe-invoke-method tableObj 'SetGridColor (list 2 63 clr))
+      (dlt:safe-invoke-method tableObj 'SetGridColor (list 4 63 clr))
+      (dlt:safe-invoke-method tableObj 'SetGridColor (list 7 63 clr))
+
+      ; 儲存格層級覆寫：把每格框線都設回 ByLayer
+      (setq row 0)
+      (while (< row rows)
+        (setq col 0)
+        (while (< col cols)
+          (dlt:safe-invoke-method tableObj 'SetCellGridColor (list row col 15 clr))
+          (dlt:safe-invoke-method tableObj 'SetCellGridColor (list row col 63 clr))
+          (setq col (1+ col))
+        )
+        (setq row (1+ row))
+      )
+      (if (= (type clr) 'VLA-OBJECT)
+        (vl-catch-all-apply 'vlax-release-object (list clr))
+      )
+    )
+  )
+
+  ; 部分版本只支援整數色碼 API，做相容回退
+  (dlt:safe-invoke-method tableObj 'SetGridColor2 (list 1 63 256))
+  (dlt:safe-invoke-method tableObj 'SetGridColor2 (list 2 63 256))
+  (dlt:safe-invoke-method tableObj 'SetGridColor2 (list 4 63 256))
+  (dlt:safe-invoke-method tableObj 'SetGridColor2 (list 7 63 256))
+
+  (setq row 0)
+  (while (< row rows)
+    (setq col 0)
+    (while (< col cols)
+      (dlt:safe-invoke-method tableObj 'SetCellGridColor2 (list row col 15 256))
+      (dlt:safe-invoke-method tableObj 'SetCellGridColor2 (list row col 63 256))
+      (setq col (1+ col))
+    )
+    (setq row (1+ row))
+  )
+  T
+)
+
 (defun dlt:apply-table-format (tableEname / tableObj rows cols row col)
   (setq tableObj (if tableEname (vlax-ename->vla-object tableEname)))
   (if (and tableObj (= (vla-get-ObjectName tableObj) "AcDbTable"))
     (progn
-      ; 表格物件顏色改為 ByLayer（邊框顏色跟隨圖層）
+      ; 框線顏色：ByLayer
       (vl-catch-all-apply 'vla-put-Color (list tableObj 256))
+      ; 框線線型/線粗：ByBlock
+      (vl-catch-all-apply 'vla-put-Linetype (list tableObj "ByBlock"))
+      (vl-catch-all-apply 'vla-put-Lineweight (list tableObj -2))
 
       (setq rows (vlax-get-property tableObj 'Rows)
             cols (vlax-get-property tableObj 'Columns))
+
+      ; 儲存格邊距
+      (dlt:safe-put-property tableObj 'HorzCellMargin dlt:*cell-h-margin*)
+      (dlt:safe-put-property tableObj 'VertCellMargin dlt:*cell-v-margin*)
 
       ; 套用欄寬
       (setq col 0)
@@ -366,27 +438,58 @@
         )
       )
 
-      ; 文字樣式統一為微軟正黑體
-      (if (dlt:ensure-msjh-text-style)
+      ; 對齊方式：正中
+      (if (vlax-method-applicable-p tableObj 'SetCellAlignment)
+        (progn
+          (setq row 0)
+          (while (< row rows)
+            (setq col 0)
+            (while (< col cols)
+              (dlt:safe-invoke-method tableObj 'SetCellAlignment (list row col dlt:*cell-align-middle-center*))
+              (setq col (1+ col))
+            )
+            (setq row (1+ row))
+          )
+        )
+        (progn
+          (dlt:safe-invoke-method tableObj 'SetAlignment (list 1 dlt:*cell-align-middle-center*)) ; Title
+          (dlt:safe-invoke-method tableObj 'SetAlignment (list 2 dlt:*cell-align-middle-center*)) ; Header
+          (dlt:safe-invoke-method tableObj 'SetAlignment (list 4 dlt:*cell-align-middle-center*)) ; Data
+        )
+      )
+
+      ; 文字樣式：Standard
+      (if (tblsearch "STYLE" dlt:*text-style-name*)
         (progn
           (dlt:safe-invoke-method tableObj 'SetTextStyle (list 1 dlt:*text-style-name*)) ; Title
           (dlt:safe-invoke-method tableObj 'SetTextStyle (list 2 dlt:*text-style-name*)) ; Header
           (dlt:safe-invoke-method tableObj 'SetTextStyle (list 4 dlt:*text-style-name*)) ; Data
         )
-        (if (not dlt:*msjh-warning-shown*)
-          (progn
-            (prompt "\n警告：找不到微軟正黑體字型檔(msjh.ttc)，本次未強制套用該字型。")
-            (setq dlt:*msjh-warning-shown* T)
-          )
-        )
+        (prompt "\n警告：找不到文字樣式 Standard，本次未強制套用文字樣式。")
       )
+
+      ; 文字顏色：ByBlock（0）
+      (dlt:safe-invoke-method tableObj 'SetColor (list 1 0)) ; Title
+      (dlt:safe-invoke-method tableObj 'SetColor (list 2 0)) ; Header
+      (dlt:safe-invoke-method tableObj 'SetColor (list 4 0)) ; Data
+      (dlt:safe-invoke-method tableObj 'SetContentColor (list 1 0)) ; Title
+      (dlt:safe-invoke-method tableObj 'SetContentColor (list 2 0)) ; Header
+      (dlt:safe-invoke-method tableObj 'SetContentColor (list 4 0)) ; Data
+
+      ; 文字旋轉：0
+      (dlt:safe-invoke-method tableObj 'SetTextRotation (list 1 0.0)) ; Title
+      (dlt:safe-invoke-method tableObj 'SetTextRotation (list 2 0.0)) ; Header
+      (dlt:safe-invoke-method tableObj 'SetTextRotation (list 4 0.0)) ; Data
+
+      ; 框線顏色：強制清掉儲存格黑色覆寫，統一回 ByLayer
+      (dlt:apply-gridcolor-bylayer tableObj rows cols)
 
       (dlt:safe-invoke-method tableObj 'Update '())
     )
   )
   (if tableObj (vlax-release-object tableObj))
-  ; 再次清除 true color override，確保是 ByLayer
-  (dlt:set-entity-color-bylayer tableEname)
+  ; 再次清除 true color override，並套用框線 ByLayer + 線型/線粗 ByBlock
+  (dlt:set-entity-table-props tableEname)
   T
 )
 
