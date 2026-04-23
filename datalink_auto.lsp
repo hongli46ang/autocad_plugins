@@ -812,6 +812,7 @@
                                                     dataLinkList connString detail flags flag91 flag92
                                                     existingKey overwriteOK okEntmod okDictadd updatedEn
                                                     fallbackKey fallbackUpdated)
+  (setq linkName (dl:sanitize-name linkName))
   (setq dl:*last-create-error* nil
         dl:*last-created-link-name* nil
         dl:*last-create-note* nil)
@@ -1234,15 +1235,12 @@
                 failList '())
 
           (foreach sheetName sheetNames
-            (setq linkName sheetName)
-            (if (= (dl:trim linkName) "")
-              (setq failList (cons "(空白分頁名稱)" failList))
-              (if (dl:create-datalink linkName linkPath sheetName)
-                (setq okList (cons (strcat sheetName " -> " linkName) okList))
-                (setq failList
-                      (cons (strcat sheetName " (" (if dl:*last-create-error* dl:*last-create-error* "unknown") ")")
-                            failList))
-              )
+            (setq linkName (dl:sanitize-name sheetName))
+            (if (dl:create-datalink linkName linkPath sheetName)
+              (setq okList (cons (strcat sheetName " -> " linkName) okList))
+              (setq failList
+                    (cons (strcat sheetName " (" (if dl:*last-create-error* dl:*last-create-error* "unknown") ")")
+                          failList))
             )
           )
 

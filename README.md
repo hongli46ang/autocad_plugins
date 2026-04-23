@@ -16,7 +16,7 @@ datalink_auto :
     9. 若要檢查目前 DWG 內 Data Link 名稱，可用 `DLLINKLIST` / `AUTODATALINKLIST` / `DATALINKLIST` / `DATALINKLISTT`
     10. 若清單異常為空，可用 `DLLINKLISTDBG` 顯示各種掃描來源的偵錯結果
     11. 若要一次建立 Excel 全部分頁的 Data Link，可用 `DLAUTOSHEETS` / `AUTODATALINKSHEETS` / `DLAUTOALLSHEETS`：
-       會用「分頁名稱」當 Data Link 名稱；同名時會直接覆蓋舊資料
+       會用「分頁名稱（去除前後空白後）」當 Data Link 名稱；同名時會直接覆蓋舊資料
     12. 建立 Data Link 時，程式會以唯讀模式讀取 Excel，並使用「不回寫來源檔 + 保留 Excel 格式(含合併儲存格)」設定
 
 datalink_table_auto :
