@@ -8,6 +8,9 @@
 ; OverwriteContentModifiedAfterUpdate=4194304, OverwriteFormatModifiedAfterUpdate=8388608
 (setq dl:*safe-update-flag91* 13369344)
 (setq dl:*safe-update-flag92* 1)
+(setq dl:*last-create-error* nil)
+(setq dl:*last-created-link-name* nil)
+(setq dl:*last-create-note* nil)
 
 (defun dl:bit-clear (flags bitMask)
   (if (/= (logand flags bitMask) 0)
@@ -35,6 +38,11 @@
     (vl-string-trim " \t\r\n" s)
     ""
   )
+)
+
+(defun dl:str-eq-ci (a b)
+  (= (strcase (dl:trim a))
+     (strcase (dl:trim b)))
 )
 
 (defun dl:norm-path (p / out)
@@ -675,6 +683,21 @@
   )
 )
 
+(defun dl:force-overwrite-key (dictEname linkName / ciKey)
+  (if (dl:ename-p dictEname)
+    (progn
+      (setq ciKey (dl:find-datalink-key-ci-in-dict dictEname linkName))
+      (if ciKey
+        (dl:remove-datalink-by-key dictEname ciKey)
+      )
+      (if (or (null ciKey) (not (dl:str-eq-ci ciKey linkName)))
+        (dl:remove-datalink-by-key dictEname linkName)
+      )
+    )
+  )
+  T
+)
+
 (defun dl:update-datalink-by-key (dictEname linkKey filePath sheetName / rec en ed conn detail dc newEd)
   (if (or (not (dl:ename-p dictEname))
           (= (dl:trim linkKey) ""))
@@ -744,6 +767,13 @@
   )
 )
 
+(defun dl:try-entdel (en)
+  (if (dl:ename-p en)
+    (vl-catch-all-apply 'entdel (list en))
+  )
+  nil
+)
+
 (defun dl:get-datalink-flags (dictEname / rec en ed flag91 flag92)
   (if (not (dl:ename-p dictEname))
     (list (dl:normalize-update-flag91 dl:*safe-update-flag91*)
@@ -780,8 +810,11 @@
 
 (defun dl:create-datalink (linkName filePath sheetName / dictObj dictEname dc dlem edl tempTC
                                                     dataLinkList connString detail flags flag91 flag92
-                                                    existingKey overwriteOK okEntmod okDictadd updatedEn)
-  (setq dl:*last-create-error* nil)
+                                                    existingKey overwriteOK okEntmod okDictadd updatedEn
+                                                    fallbackKey fallbackUpdated)
+  (setq dl:*last-create-error* nil
+        dl:*last-created-link-name* nil
+        dl:*last-create-note* nil)
   (setq dictObj (dl:get-datalink-dict-object))
 
   (if (null dictObj)
@@ -820,6 +853,8 @@
               (if updatedEn
                 (progn
                   (setq dl:*last-create-error* nil)
+                  (setq dl:*last-created-link-name* linkName)
+                  (setq dl:*last-create-note* "updated_existing")
                   (dl:release dictObj)
                   updatedEn
                 )
@@ -954,20 +989,55 @@
                           (setq okDictadd (dictadd dictEname linkName dlem))
                           (if (null okDictadd)
                             (progn
-                              (if (dl:remove-datalink-by-key dictEname linkName)
+                              ; 部分版本/部分圖檔會出現 dictadd 回 nil，但實際上同名已存在（或已被建立）
+                              ; 先嘗試以同名更新，避免誤判失敗
+                              (setq fallbackKey (dl:find-datalink-key-ci-in-dict dictEname linkName))
+                              (if fallbackKey
+                                (setq fallbackUpdated
+                                      (dl:update-datalink-by-key dictEname fallbackKey filePath sheetName))
+                              )
+                              (if fallbackUpdated
+                                (progn
+                                  (setq dl:*last-created-link-name* linkName)
+                                  (setq dl:*last-create-note* "updated_existing")
+                                )
+                              )
+
+                              (if (and (null fallbackUpdated)
+                                       (progn
+                                         (dl:force-overwrite-key dictEname linkName)
+                                         T))
                                 (setq okDictadd (dictadd dictEname linkName dlem))
                               )
                             )
                           )
-                          (if okDictadd
+                          (if (and (null okDictadd) (null fallbackUpdated))
                             (progn
+                              ; 最終重試：再做一次強制覆蓋後重建（不改名）
+                              (dl:force-overwrite-key dictEname linkName)
+                              (setq okDictadd (dictadd dictEname linkName dlem))
+                            )
+                          )
+                          (if (or okDictadd fallbackUpdated)
+                            (progn
+                              ; 若採用 fallback 更新成功，清掉本次未掛入字典的新建暫存物件
+                              (if fallbackUpdated
+                                (progn
+                                  (dl:try-entdel dlem)
+                                  (dl:try-entdel tempTC)
+                                )
+                              )
+                              (if (null dl:*last-created-link-name*)
+                                (setq dl:*last-created-link-name* linkName)
+                              )
                               (setq dl:*last-create-error* nil)
                               (dl:release dictObj)
-                              dlem
+                              (if fallbackUpdated fallbackUpdated dlem)
                             )
                             (progn
                               (setq dl:*last-create-error* "dictadd_failed")
-                              (entdel dlem)
+                              (dl:try-entdel dlem)
+                              (dl:try-entdel tempTC)
                               (dl:release dictObj)
                               nil
                             )
@@ -975,7 +1045,8 @@
                         )
                         (progn
                           (setq dl:*last-create-error* "entmod_failed")
-                          (entdel dlem)
+                          (dl:try-entdel dlem)
+                          (dl:try-entdel tempTC)
                           (dl:release dictObj)
                           nil
                         )
@@ -1179,7 +1250,7 @@
           (prompt (strcat "\n成功: " (itoa (length okList))
                           "，失敗: " (itoa (length failList))))
           (prompt (strcat "\n來源檔案(相對路徑): " linkPath))
-          (prompt "\nData Link 名稱與 Excel 分頁名稱一致；同名 Data Link 會自動覆蓋舊資料。")
+          (prompt "\nData Link 會使用分頁名稱；遇到同名會直接覆蓋舊資料。")
 
           (if okList
             (progn
@@ -1261,7 +1332,7 @@
                                   "，找不到分頁: " (itoa (length noSheetList))
                                   "，建立失敗: " (itoa (length failCreate))))
                   (prompt (strcat "\n來源檔案(相對路徑): " linkPath))
-                  (prompt "\n同名 Data Link 會自動覆蓋舊資料。")
+                  (prompt "\n同名 Data Link 會直接覆蓋舊資料。")
 
                   (if okList
                     (progn
