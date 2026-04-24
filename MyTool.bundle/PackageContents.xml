@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage
+  SchemaVersion="1.0"
+  AutodeskProduct="AutoCAD"
+  Name="MyTool"
+  Description="MyTool AutoCAD LISP Commands"
+  AppVersion="1.0.0"
+  ProductCode="{12A5F7A4-3E67-46F9-9D91-59BB713C7244}"
+  UpgradeCode="{A63EF95D-8BAF-4C90-B233-8C10B6A1D15B}">
+  <CompanyDetails Name="MyTool" Url="" />
+
+  <Components Description="LISP command modules">
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" />
+
+    <ComponentEntry
+      AppName="add.lsp"
+      AppType="Lisp"
+      ModuleName="./Contents/add.lsp"
+      AppDescription="ADDNUM command"
+      LoadOnAutoCADStartup="False"
+      LoadOnCommandInvocation="True">
+      <Commands GroupName="ADDNUM">
+        <Command Local="ADDNUM" Global="ADDNUM" />
+      </Commands>
+    </ComponentEntry>
+
+    <ComponentEntry
+      AppName="auto_fillet_90.lsp"
+      AppType="Lisp"
+      ModuleName="./Contents/auto_fillet_90.lsp"
+      AppDescription="PL90F/PL90FA commands"
+      LoadOnAutoCADStartup="False"
+      LoadOnCommandInvocation="True">
+      <Commands GroupName="AUTO_FILLET_90">
+        <Command Local="PL90F" Global="PL90F" />
+        <Command Local="PL90FA" Global="PL90FA" />
+      </Commands>
+    </ComponentEntry>
+
+    <ComponentEntry
+      AppName="datalink_auto.lsp"
+      AppType="Lisp"
+      ModuleName="./Contents/datalink_auto.lsp"
+      AppDescription="Data Link creation commands"
+      LoadOnAutoCADStartup="False"
+      LoadOnCommandInvocation="True">
+      <Commands GroupName="DATALINK_AUTO">
+        <Command Local="DLAUTO" Global="DLAUTO" />
+        <Command Local="AUTODATALINK" Global="AUTODATALINK" />
+        <Command Local="DLAUTOSHEETS" Global="DLAUTOSHEETS" />
+        <Command Local="AUTODATALINKSHEETS" Global="AUTODATALINKSHEETS" />
+        <Command Local="DLAUTOALLSHEETS" Global="DLAUTOALLSHEETS" />
+        <Command Local="DLAUTOBATCH" Global="DLAUTOBATCH" />
+        <Command Local="AUTODATALINKBATCH" Global="AUTODATALINKBATCH" />
+        <Command Local="DLLINKLIST" Global="DLLINKLIST" />
+        <Command Local="AUTODATALINKLIST" Global="AUTODATALINKLIST" />
+        <Command Local="DATALINKLIST" Global="DATALINKLIST" />
+        <Command Local="DATALINKLISTT" Global="DATALINKLISTT" />
+        <Command Local="DLLINKLISTDBG" Global="DLLINKLISTDBG" />
+        <Command Local="DLTABLELINKCHECK" Global="DLTABLELINKCHECK" />
+        <Command Local="AUTODATALINKCHECK" Global="AUTODATALINKCHECK" />
+        <Command Local="DATALINKCHECK" Global="DATALINKCHECK" />
+        <Command Local="DLDATALINKREPAIR" Global="DLDATALINKREPAIR" />
+        <Command Local="AUTODATALINKREPAIR" Global="AUTODATALINKREPAIR" />
+        <Command Local="DATALINKREPAIR" Global="DATALINKREPAIR" />
+        <Command Local="DLDATALINKREBUILDALL" Global="DLDATALINKREBUILDALL" />
+        <Command Local="AUTODATALINKREBUILDALL" Global="AUTODATALINKREBUILDALL" />
+        <Command Local="DATALINKREBUILDALL" Global="DATALINKREBUILDALL" />
+      </Commands>
+    </ComponentEntry>
+
+    <ComponentEntry
+      AppName="datalink_table_auto.lsp"
+      AppType="Lisp"
+      ModuleName="./Contents/datalink_table_auto.lsp"
+      AppDescription="Data Link table creation and rebinding commands"
+      LoadOnAutoCADStartup="False"
+      LoadOnCommandInvocation="True">
+      <Commands GroupName="DATALINK_TABLE_AUTO">
+        <Command Local="DLTABLEUI" Global="DLTABLEUI" />
+        <Command Local="DLTABLEDIALOG" Global="DLTABLEDIALOG" />
+        <Command Local="TBFIX" Global="TBFIX" />
+        <Command Local="TBFIXALL" Global="TBFIXALL" />
+        <Command Local="DLDATAONLY" Global="DLDATAONLY" />
+        <Command Local="DLTABLEAUTO" Global="DLTABLEAUTO" />
+        <Command Local="AUTODATALINKTABLE" Global="AUTODATALINKTABLE" />
+        <Command Local="DLLINKTABLE" Global="DLLINKTABLE" />
+      </Commands>
+    </ComponentEntry>
+
+    <ComponentEntry
+      AppName="datalink_batch_table.lsp"
+      AppType="Lisp"
+      ModuleName="./Contents/datalink_batch_table.lsp"
+      AppDescription="Batch Data Link table creation commands"
+      LoadOnAutoCADStartup="False"
+      LoadOnCommandInvocation="True">
+      <Commands GroupName="DATALINK_BATCH_TABLE">
+        <Command Local="DLBATCHAUTO" Global="DLBATCHAUTO" />
+        <Command Local="DLBATCHTABLE" Global="DLBATCHTABLE" />
+        <Command Local="DLBATCHTABLES" Global="DLBATCHTABLES" />
+        <Command Local="DLLIST" Global="DLLIST" />
+        <Command Local="DLBATCHLIST" Global="DLBATCHLIST" />
+        <Command Local="DLBATCHFIX" Global="DLBATCHFIX" />
+      </Commands>
+    </ComponentEntry>
+  </Components>
+</ApplicationPackage>

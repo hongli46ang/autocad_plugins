@@ -352,6 +352,12 @@
   names
 )
 
+(defun dl:get-panel-selection-like-pl90f (/ ss)
+  (prompt "\n框選/多選盤名文字（方式同 PL90F，僅 TEXT/MTEXT/ATTRIB/ATTDEF）: ")
+  (setq ss (ssget '((0 . "TEXT,MTEXT,ATTRIB,ATTDEF"))))
+  ss
+)
+
 (defun dl:get-datalink-dict-object (/ acad doc db dicts dictObj nod rec en)
   (setq acad  (vlax-get-acad-object)
         doc   (vla-get-ActiveDocument acad)
@@ -500,6 +506,41 @@
   )
 )
 
+(defun dl:get-datalink-key-names-from-vla-dict-recursive (dictObj / out item key oname handle)
+  (setq out '())
+  (if (and dictObj (= (type dictObj) 'VLA-OBJECT))
+    (progn
+      (setq handle (dl:safe-vla-handle dictObj))
+      (if (and (/= handle "") (member handle dl:*dict-vla-visited*))
+        out
+        (progn
+          (if (/= handle "")
+            (setq dl:*dict-vla-visited* (cons handle dl:*dict-vla-visited*))
+          )
+          (vlax-for item dictObj
+            (setq key   (dl:safe-vla-getname dictObj item)
+                  oname (dl:safe-vla-objectname item))
+            (cond
+              ((wcmatch oname "*DICTIONARY*")
+               (foreach n (dl:get-datalink-key-names-from-vla-dict-recursive item)
+                 (setq out (dl:add-unique-ci n out))
+               )
+              )
+              (T
+               ; 原始 key 掃描（含可能殘留的無效名稱）
+               (if (/= key "")
+                 (setq out (dl:add-unique-ci key out))
+               )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+  out
+)
+
 (defun dl:get-datalink-names-from-vla-dict-recursive (dictObj / out item key oname handle)
   (setq out '())
   (if (and dictObj (= (type dictObj) 'VLA-OBJECT))
@@ -520,8 +561,7 @@
                  (setq out (dl:add-unique-ci n out))
                )
               )
-              (T
-               ; 在 DataLink 字典樹中，非字典節點的 key 即可視為 Data Link 名稱
+              ((wcmatch oname "*DATALINK*")
                (if (/= key "")
                  (setq out (dl:add-unique-ci key out))
                )
@@ -546,6 +586,24 @@
     (progn
       (setq dl:*dict-vla-visited* nil)
       (setq out (dl:get-datalink-names-from-vla-dict-recursive dictObj))
+      (dl:release dictObj)
+    )
+  )
+  (dl:release dicts)
+  out
+)
+
+(defun dl:get-datalink-key-names-vla (/ acad doc db dicts dictObj out)
+  (setq out '())
+  (setq acad (vlax-get-acad-object)
+        doc  (vla-get-ActiveDocument acad)
+        db   (vla-get-Database doc)
+        dicts (vla-get-Dictionaries db))
+  (setq dictObj (vl-catch-all-apply 'vla-Item (list dicts "ACAD_DATALINK")))
+  (if (not (vl-catch-all-error-p dictObj))
+    (progn
+      (setq dl:*dict-vla-visited* nil)
+      (setq out (dl:get-datalink-key-names-from-vla-dict-recursive dictObj))
       (dl:release dictObj)
     )
   )
@@ -1129,15 +1187,20 @@
   (princ)
 )
 
-(defun c:DLLINKLISTDBG (/ namesVla namesDict namesNod)
+(defun c:DLLINKLISTDBG (/ namesVla namesKeys namesDict namesNod)
   (vl-load-com)
   (setq namesVla  (dl:get-datalink-names-vla)
+        namesKeys (dl:get-datalink-key-names-vla)
         namesDict (dl:get-datalink-names-dictonly)
         namesNod  (dl:get-datalink-names-by-nod-scan))
   (prompt "\n--- DLLINKLIST 偵錯 ---")
   (prompt (strcat "\nVLA(管理員來源) 數量: " (itoa (length namesVla))))
   (foreach n namesVla
     (prompt (strcat "\n  [VLA] " n))
+  )
+  (prompt (strcat "\nVLA RawKey(含殘留) 數量: " (itoa (length namesKeys))))
+  (foreach n namesKeys
+    (prompt (strcat "\n  [VLA_KEY] " n))
   )
   (prompt (strcat "\nDict(ename) 數量: " (itoa (length namesDict))))
   (foreach n namesDict
@@ -1148,6 +1211,600 @@
     (prompt (strcat "\n  [NOD] " n))
   )
   (princ)
+)
+
+(defun dl:absolute-path-p (p)
+  (setq p (dl:trim p))
+  (or
+    (and (>= (strlen p) 2)
+         (= (substr p 1 1) "\\")
+         (= (substr p 2 1) "\\"))
+    (and (>= (strlen p) 3)
+         (= (substr p 2 1) ":")
+         (= (substr p 3 1) "\\"))
+  )
+)
+
+(defun dl:add-unique-equal (x lst)
+  (if (vl-some '(lambda (a) (equal a x)) lst)
+    lst
+    (cons x lst)
+  )
+)
+
+(defun dl:map-get-ci (key alist / target out pair)
+  (setq target (strcase (dl:trim key))
+        out nil)
+  (foreach pair alist
+    (if (and (null out)
+             (= (strcase (dl:trim (car pair))) target))
+      (setq out pair)
+    )
+  )
+  out
+)
+
+(defun dl:map-put-ci (key val alist / target out pair)
+  (setq target (strcase (dl:trim key))
+        out '())
+  (foreach pair alist
+    (if (/= (strcase (dl:trim (car pair))) target)
+      (setq out (append out (list pair)))
+    )
+  )
+  (append out (list (cons key val)))
+)
+
+(defun dl:split-conn-string (conn / txt last pos from file sheet)
+  (setq txt  (dl:trim conn)
+        last nil
+        from 0)
+  (while (setq pos (vl-string-search "!" txt from))
+    (setq last pos
+          from (1+ pos))
+  )
+  (if last
+    (progn
+      (setq file  (substr txt 1 last)
+            sheet (substr txt (+ last 2)))
+    )
+    (setq file txt
+          sheet "")
+  )
+  (list (dl:trim file) (dl:trim sheet))
+)
+
+(defun dl:get-conn-string-from-datalink-ed (ed / conn lst pair mark)
+  (setq conn (dl:trim (cdr (assoc 302 ed))))
+  (if (= conn "")
+    (progn
+      (setq lst  ed
+            mark nil)
+      (while (and lst (= conn ""))
+        (setq pair (car lst))
+        (cond
+          ((and (= (car pair) 300)
+                (= (strcase (dl:trim (cdr pair))) "ACEXCEL_CONNECTION_STRING"))
+           (setq mark T)
+          )
+          ((and mark (= (car pair) 1))
+           (setq conn (dl:trim (cdr pair))
+                 mark nil)
+          )
+          (T nil)
+        )
+        (setq lst (cdr lst))
+      )
+    )
+  )
+  conn
+)
+
+(defun dl:resolve-link-file-existing (rawPath / p cands found)
+  (setq p (dl:norm-path rawPath)
+        cands '()
+        found "")
+  (if (/= p "")
+    (setq cands (dl:add-unique-equal p cands))
+  )
+  (if (and (/= p "") (not (dl:absolute-path-p p)))
+    (setq cands (dl:add-unique-equal (dl:norm-path (strcat (getvar "dwgprefix") p)) cands))
+  )
+  (foreach c cands
+    (if (and (= found "") (findfile c))
+      (setq found (findfile c))
+    )
+  )
+  found
+)
+
+(defun dl:get-datalink-items-from-dict-recursive (dictEname / rec key objEn objEd typ out handle nm item)
+  (setq out '())
+  (if (dl:ename-p dictEname)
+    (progn
+      (setq handle (cdr (assoc 5 (entget dictEname))))
+      (if (and handle (member handle dl:*dict-visited*))
+        out
+        (progn
+          (if handle
+            (setq dl:*dict-visited* (cons handle dl:*dict-visited*))
+          )
+          (setq rec (dictnext dictEname T))
+          (while rec
+            (setq key   (dl:trim (cdr (assoc 3 rec)))
+                  objEn (or (cdr (assoc 360 rec))
+                            (cdr (assoc 350 rec)))
+                  objEd (if (dl:ename-p objEn) (entget objEn))
+                  typ   (if objEd (cdr (assoc 0 objEd))))
+            (cond
+              ((= typ "DATALINK")
+               (setq nm (if (/= key "") key (dl:get-datalink-name-from-object objEn)))
+               (if (dl:ename-p objEn)
+                 (progn
+                   (setq item (list objEn nm))
+                   (setq out (dl:add-unique-equal item out))
+                 )
+               )
+              )
+              ((= typ "DICTIONARY")
+               (foreach item (dl:get-datalink-items-from-dict-recursive objEn)
+                 (setq out (dl:add-unique-equal item out))
+               )
+              )
+            )
+            (setq rec (dictnext dictEname))
+          )
+        )
+      )
+    )
+  )
+  out
+)
+
+(defun dl:get-datalink-items-all (/ out dictE dictEnames d en ed nm item)
+  (setq out '())
+
+  ; 1) 標準 ACAD_DATALINK 字典遞迴
+  (setq dictE (dl:get-existing-datalink-dict-ename))
+  (if (and (null dictE) (dl:ename-p (namedobjdict)))
+    (setq dictE (dl:get-datalink-dict-ename))
+  )
+  (if (dl:ename-p dictE)
+    (progn
+      (setq dl:*dict-visited* nil)
+      (foreach item (dl:get-datalink-items-from-dict-recursive dictE)
+        (setq out (dl:add-unique-equal item out))
+      )
+    )
+  )
+
+  ; 2) 回退：掃描 NOD 底下所有字典
+  (if (null out)
+    (progn
+      (setq dictEnames (dl:get-nod-dictionary-enames)
+            dl:*dict-visited* nil)
+      (foreach d dictEnames
+        (foreach item (dl:get-datalink-items-from-dict-recursive d)
+          (setq out (dl:add-unique-equal item out))
+        )
+      )
+    )
+  )
+
+  ; 3) 最後回退：掃描主資料庫圖元
+  (if (null out)
+    (progn
+      (setq en (entnext))
+      (while en
+        (setq ed (entget en))
+        (if (and ed (= (cdr (assoc 0 ed)) "DATALINK"))
+          (progn
+            (setq nm   (dl:get-datalink-name-from-object en)
+                  item (list en nm))
+            (setq out (dl:add-unique-equal item out))
+          )
+        )
+        (setq en (entnext en))
+      )
+    )
+  )
+  out
+)
+
+(defun dl:get-no-object-datalink-names (/ rawNames validNames out n)
+  (setq rawNames   (dl:get-datalink-key-names-vla)
+        validNames (dl:get-datalink-names)
+        out '())
+  (foreach n rawNames
+    (if (not (dl:list-has-ci n validNames))
+      (setq out (dl:add-unique-ci n out))
+    )
+  )
+  out
+)
+
+(defun c:DLTABLELINKCHECK (/ items item en ed handle name conn parts file sheet resolved status
+                             ok miss noConn noObj noObjNames)
+  (vl-load-com)
+  (setq items (dl:get-datalink-items-all)
+        ok 0
+        miss 0
+        noConn 0
+        noObj 0)
+  (prompt "\n--- Data Link 來源檢查 ---")
+  (if items
+    (foreach item items
+      (setq en       (car item)
+            name     (dl:trim (cadr item))
+            ed       (if (dl:ename-p en) (entget en))
+            handle   (if ed (dl:trim (cdr (assoc 5 ed))) "")
+            conn     (if ed (dl:get-conn-string-from-datalink-ed ed) "")
+            parts    (dl:split-conn-string conn)
+            file     (car parts)
+            sheet    (cadr parts)
+            resolved (if (/= file "") (dl:resolve-link-file-existing file) ""))
+
+      (if (= name "")
+        (setq name (dl:get-datalink-name-from-object en))
+      )
+
+      (cond
+        ((= conn "")
+         (setq status "[NO_CONN]"
+               noConn (1+ noConn))
+        )
+        ((= resolved "")
+         (setq status "[MISS_FILE]"
+               miss (1+ miss))
+        )
+        (T
+         (setq status "[OK]"
+               ok (1+ ok))
+        )
+      )
+
+      (prompt (strcat "\n" status
+                      " Handle=" handle
+                      " Name=" name
+                      " File=" file
+                      " Sheet=" sheet
+                      " Resolved=" (if (= resolved "") "<not found>" resolved)))
+    )
+    (prompt "\n未找到任何有效 Data Link 物件。")
+  )
+
+  (setq noObjNames (dl:get-no-object-datalink-names))
+  (foreach name noObjNames
+    (setq noObj (1+ noObj))
+    (prompt (strcat "\n[NO_OBJECT] Handle=<none>"
+                    " Name=" name
+                    " File=<unknown>"
+                    " Sheet=<unknown>"
+                    " Resolved=<unknown>"))
+  )
+
+  (prompt (strcat "\n--- 檢查完成 ---"
+                  "\nOK: " (itoa ok)
+                  "，MISS_FILE: " (itoa miss)
+                  "，NO_CONN: " (itoa noConn)
+                  "，NO_OBJECT: " (itoa noObj)))
+  (princ)
+)
+
+(defun dl:remove-datalink-key-ci-vla-recursive (dictObj linkName / target removed item key oname ret)
+  (setq target  (strcase (dl:trim linkName))
+        removed nil)
+  (if (and (= (type dictObj) 'VLA-OBJECT) (/= target ""))
+    (vlax-for item dictObj
+      (if (not removed)
+        (progn
+          (setq key   (dl:safe-vla-getname dictObj item)
+                oname (dl:safe-vla-objectname item))
+          (cond
+            ((wcmatch oname "*DICTIONARY*")
+             (if (dl:remove-datalink-key-ci-vla-recursive item linkName)
+               (setq removed T)
+             )
+            )
+            ((and (/= key "")
+                  (= (strcase (dl:trim key)) target))
+             (setq ret (vl-catch-all-apply 'vla-Remove (list dictObj key)))
+             (if (not (vl-catch-all-error-p ret))
+               (setq removed T)
+             )
+            )
+          )
+        )
+      )
+    )
+  )
+  removed
+)
+
+(defun dl:remove-datalink-by-key-hard (linkName / dictE key removed dictObj)
+  (setq removed nil)
+  (if (/= (dl:trim linkName) "")
+    (progn
+      (setq dictE (dl:get-existing-datalink-dict-ename))
+      (if (null dictE)
+        (setq dictE (dl:get-datalink-dict-ename))
+      )
+
+      (if (dl:ename-p dictE)
+        (progn
+          (setq key (dl:find-datalink-key-ci-in-dict dictE linkName))
+          (if (and key (dl:remove-datalink-by-key dictE key))
+            (setq removed T)
+          )
+          (if (and (not removed) (dl:remove-datalink-by-key dictE linkName))
+            (setq removed T)
+          )
+        )
+      )
+
+      (if (not removed)
+        (progn
+          (setq dictObj (dl:get-datalink-dict-object))
+          (if dictObj
+            (progn
+              (if (dl:remove-datalink-key-ci-vla-recursive dictObj linkName)
+                (setq removed T)
+              )
+              (dl:release dictObj)
+            )
+          )
+        )
+      )
+    )
+  )
+  removed
+)
+
+(defun dl:collect-excel-files-for-repair (/ files idx fp)
+  (setq files '()
+        idx   1
+        fp    T)
+  (while fp
+    (setq fp (getfiled
+               (strcat "選擇第 " (itoa idx) " 個 Excel 檔案（取消=結束）")
+               (getvar "dwgprefix")
+               "xlsx;xls;csv"
+               0))
+    (if fp
+      (progn
+        (setq files (append files (list fp)))
+        (setq idx (1+ idx))
+      )
+    )
+  )
+  files
+)
+
+(defun dl:build-sheet-map-from-files (files / out absPath linkPath sheetNames sh key val)
+  (setq out '())
+  (foreach absPath files
+    (setq linkPath  (dl:pick-link-path absPath)
+          sheetNames (dl:get-sheet-names absPath))
+    (if (and sheetNames (car sheetNames))
+      (foreach sh sheetNames
+        (setq val (list linkPath sh absPath))
+        (setq key (dl:trim sh))
+        (if (/= key "")
+          (setq out (dl:map-put-ci key val out))
+        )
+        (setq key (dl:sanitize-name sh))
+        (if (/= key "")
+          (setq out (dl:map-put-ci key val out))
+        )
+      )
+    )
+  )
+  out
+)
+
+(defun dl:create-all-datalinks-from-files (files / okList failList absPath linkPath sheetNames sheetName linkName)
+  (setq okList '()
+        failList '())
+  (foreach absPath files
+    (setq linkPath  (dl:pick-link-path absPath)
+          sheetNames (dl:get-sheet-names absPath))
+    (if (and sheetNames (car sheetNames))
+      (foreach sheetName sheetNames
+        (setq linkName (dl:sanitize-name sheetName))
+        (if (dl:create-datalink linkName linkPath sheetName)
+          (setq okList (cons (strcat linkName " -> " sheetName) okList))
+          (setq failList
+                (cons (strcat linkName " (" (if dl:*last-create-error* dl:*last-create-error* "unknown") ")")
+                      failList))
+        )
+      )
+      (setq failList (cons (strcat absPath " (read_sheets_failed)") failList))
+    )
+  )
+  (list okList failList)
+)
+
+(defun c:DLDATALINKREPAIR (/ noObjNames validNames files sheetMap name pair info linkPath sheetName
+                             okList failList noSheetList removedCnt allRes)
+  (vl-load-com)
+  (setvar "cmdecho" 0)
+  (prompt "\n--- Data Link NO_OBJECT 修復 ---")
+  (setq noObjNames (dl:get-no-object-datalink-names)
+        validNames (dl:get-datalink-names))
+  (if (null noObjNames)
+    (if validNames
+      (prompt "\n未偵測到 NO_OBJECT 殘留名稱，且已有有效 Data Link，無需修復。")
+      (progn
+        (prompt "\n目前圖面沒有任何有效 Data Link，將改用全量重建模式。")
+        (prompt "\n會從你選的 Excel 檔案全部分頁建立 Data Link（同名會覆蓋舊資料）。")
+        (setq files (dl:collect-excel-files-for-repair))
+        (if (null files)
+          (prompt "\n未選取任何 Excel 檔案，已取消。")
+          (progn
+            (setq allRes  (dl:create-all-datalinks-from-files files)
+                  okList  (car allRes)
+                  failList (cadr allRes))
+            (prompt "\n--- 全量重建完成 ---")
+            (prompt (strcat "\n成功建立: " (itoa (length okList))
+                            "，建立失敗: " (itoa (length failList))))
+            (if okList
+              (progn
+                (prompt "\n--- 成功清單 ---")
+                (foreach name (reverse okList)
+                  (prompt (strcat "\n" name))
+                )
+              )
+            )
+            (if failList
+              (progn
+                (prompt "\n--- 建立失敗 ---")
+                (foreach name (reverse failList)
+                  (prompt (strcat "\n" name))
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+    (progn
+      (prompt (strcat "\n偵測到 NO_OBJECT 名稱數: " (itoa (length noObjNames))))
+      (prompt "\n以下名稱將嘗試重建：")
+      (foreach name noObjNames
+        (prompt (strcat "\n" name))
+      )
+
+      (setq files (dl:collect-excel-files-for-repair))
+      (if (null files)
+        (prompt "\n未選取任何 Excel 檔案，已取消。")
+        (progn
+          (setq sheetMap (dl:build-sheet-map-from-files files))
+          (if (null sheetMap)
+            (prompt "\n無法從所選 Excel 讀取任何分頁，已取消。")
+            (progn
+              (setq okList '()
+                    failList '()
+                    noSheetList '()
+                    removedCnt 0)
+
+              (foreach name noObjNames
+                (setq pair (dl:map-get-ci name sheetMap))
+                (if pair
+                  (progn
+                    (setq info     (cdr pair)
+                          linkPath (car info)
+                          sheetName (cadr info))
+                    (if (dl:remove-datalink-by-key-hard name)
+                      (setq removedCnt (1+ removedCnt))
+                    )
+                    (if (dl:create-datalink name linkPath sheetName)
+                      (setq okList (cons (strcat name " -> " sheetName) okList))
+                      (setq failList
+                            (cons (strcat name " (" (if dl:*last-create-error* dl:*last-create-error* "unknown") ")")
+                                  failList))
+                    )
+                  )
+                  (setq noSheetList (cons name noSheetList))
+                )
+              )
+
+              (prompt "\n--- 修復完成 ---")
+              (prompt (strcat "\n移除殘留 key: " (itoa removedCnt)))
+              (prompt (strcat "\n成功重建: " (itoa (length okList))
+                              "，找不到同名分頁: " (itoa (length noSheetList))
+                              "，重建失敗: " (itoa (length failList))))
+
+              (if okList
+                (progn
+                  (prompt "\n--- 成功清單 ---")
+                  (foreach name (reverse okList)
+                    (prompt (strcat "\n" name))
+                  )
+                )
+              )
+              (if noSheetList
+                (progn
+                  (prompt "\n--- 找不到同名分頁 ---")
+                  (foreach name (reverse noSheetList)
+                    (prompt (strcat "\n" name))
+                  )
+                )
+              )
+              (if failList
+                (progn
+                  (prompt "\n--- 重建失敗 ---")
+                  (foreach name (reverse failList)
+                    (prompt (strcat "\n" name))
+                  )
+                )
+              )
+            )
+          )
+        )
+      )
+    )
+  )
+  (princ)
+)
+
+(defun c:DLDATALINKREBUILDALL (/ files allRes okList failList name)
+  (vl-load-com)
+  (setvar "cmdecho" 0)
+  (prompt "\n--- Data Link 強制全量重建 ---")
+  (prompt "\n會由所選 Excel 的全部分頁建立 Data Link；同名一律覆蓋舊資料。")
+  (setq files (dl:collect-excel-files-for-repair))
+  (if (null files)
+    (prompt "\n未選取任何 Excel 檔案，已取消。")
+    (progn
+      (setq allRes   (dl:create-all-datalinks-from-files files)
+            okList   (car allRes)
+            failList (cadr allRes))
+      (prompt "\n--- 全量重建完成 ---")
+      (prompt (strcat "\n成功建立/覆蓋: " (itoa (length okList))
+                      "，失敗: " (itoa (length failList))))
+      (if okList
+        (progn
+          (prompt "\n--- 成功清單 ---")
+          (foreach name (reverse okList)
+            (prompt (strcat "\n" name))
+          )
+        )
+      )
+      (if failList
+        (progn
+          (prompt "\n--- 失敗清單 ---")
+          (foreach name (reverse failList)
+            (prompt (strcat "\n" name))
+          )
+        )
+      )
+    )
+  )
+  (princ)
+)
+
+(defun c:AUTODATALINKCHECK ()
+  (c:DLTABLELINKCHECK)
+)
+
+(defun c:DATALINKCHECK ()
+  (c:DLTABLELINKCHECK)
+)
+
+(defun c:AUTODATALINKREPAIR ()
+  (c:DLDATALINKREPAIR)
+)
+
+(defun c:DATALINKREPAIR ()
+  (c:DLDATALINKREPAIR)
+)
+
+(defun c:AUTODATALINKREBUILDALL ()
+  (c:DLDATALINKREBUILDALL)
+)
+
+(defun c:DATALINKREBUILDALL ()
+  (c:DLDATALINKREBUILDALL)
 )
 
 (defun c:AUTODATALINKLIST ()
@@ -1296,8 +1953,7 @@
       (if (or (null sheetNames) (null (car sheetNames)))
         (prompt "\n無法讀取 Excel 分頁，請確認已安裝 Excel 且檔案可正常開啟。")
         (progn
-          (prompt "\n請選取要批量建立的盤名文字物件...")
-          (setq ss (ssget '((0 . "TEXT,MTEXT,ATTRIB,ATTDEF"))))
+          (setq ss (dl:get-panel-selection-like-pl90f))
           (if (null ss)
             (prompt "\n未選取任何文字物件，已取消。")
             (progn
@@ -1371,5 +2027,5 @@
   (c:DLAUTOBATCH)
 )
 
-(princ "\nDLAUTO / AUTODATALINK / DLAUTOSHEETS / AUTODATALINKSHEETS / DLAUTOALLSHEETS / DLAUTOBATCH / AUTODATALINKBATCH / DLLINKLIST / AUTODATALINKLIST / DATALINKLIST / DATALINKLISTT / DLLINKLISTDBG 載入完成。")
+(princ "\nDLAUTO / AUTODATALINK / DLAUTOSHEETS / AUTODATALINKSHEETS / DLAUTOALLSHEETS / DLAUTOBATCH / AUTODATALINKBATCH / DLLINKLIST / AUTODATALINKLIST / DATALINKLIST / DATALINKLISTT / DLLINKLISTDBG / DLTABLELINKCHECK / AUTODATALINKCHECK / DATALINKCHECK / DLDATALINKREPAIR / AUTODATALINKREPAIR / DATALINKREPAIR / DLDATALINKREBUILDALL / AUTODATALINKREBUILDALL / DATALINKREBUILDALL 載入完成。")
 (princ)

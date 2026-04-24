@@ -1,24 +1,157 @@
 (vl-load-com)
 
-(setq dlt:*last-removed-empty-rows* 0)
-; 預設關閉：避免刪空白列時誤拆到合併列
-(setq dlt:*remove-empty-rows-after-create* nil)
-(setq dlt:*last-create-failure-reason* nil)
-(setq dlt:*last-created-table-ename* nil)
-(setq dlt:*has-command-s* nil)
-(setq dlt:*cell-width* 2025.0)
-(setq dlt:*cell-height* 486.0)
-(setq dlt:*text-height* 200.0)
-(setq dlt:*text-style-name* "Standard")
-(setq dlt:*cell-h-margin* 2.0)
-(setq dlt:*cell-v-margin* 2.0)
-(setq dlt:*cell-align-middle-center* 5)
-(setq dlt:*text-font-file* "msjh.ttc")
-(setq dlt:*text-font-candidates* '("msjh.ttc" "MSJH.TTC" "msjh.ttf" "MSJH.TTF"))
-(setq dlt:*msjh-font-resolved* nil)
-(setq dlt:*msjh-warning-shown* nil)
-; 批次重綁時是否啟用「鄰近文字比對」回退
-(setq dlt:*enable-near-text-fallback* T)
+;; DLTABLEUI
+;; 流程：啟動 TABLE 互動介面 -> 使用者選 Data Link / 插入點 -> 指令結束後自動格式化新表格
+;; 備用：TBFIX 可手動選一個既有表格並套用相同格式
+
+(if (and (boundp 'dlt:*update-reactor*) dlt:*update-reactor* (vlr-added-p dlt:*update-reactor*))
+  (vlr-remove dlt:*update-reactor*)
+)
+(setq dlt:*table-before-ent* nil)
+(setq dlt:*table-reactor* nil)
+(setq dlt:*update-reactor* nil)
+(setq dlt:*pending-format-mode* nil)
+(setq dlt:*pending-table-ename* nil)
+(setq dlt:*pending-format-source* "")
+(setq dlt:*pending-format-remaining* 0)
+
+;; ====== 你主要改這幾個值 ======
+(setq dlt:*table-row-height* 486.0)     ;; 列高
+(setq dlt:*table-col-width* 2025.0)     ;; 欄寬
+(setq dlt:*table-text-height* 200.0)    ;; 文字高度
+(setq dlt:*table-text-style* "Standard") ;; 文字型式
+(setq dlt:*table-style-name* "DLT_DATALINK_TABLE") ;; 自動套用的表格型式
+(setq dlt:*table-alignment* 5)          ;; 5 = 置中
+(setq dlt:*table-color-index* 256)      ;; 256 = ByLayer
+(setq dlt:*table-linetype* "ByLayer")
+(setq dlt:*table-lineweight* -1)        ;; -1 = ByLayer
+(setq dlt:*table-grid-types-all* 63)    ;; 所有格線
+(setq dlt:*format-delay-ms* 1200)       ;; 每次重套格式前等待時間
+(setq dlt:*format-repeat-count* 6)      ;; Data Link 覆蓋較慢時連續補格式次數
+
+;; Data Link 更新選項 bit：
+;; SkipFormat=131072, UpdateRowHeight=262144, UpdateColumnWidth=524288,
+;; AllowSourceUpdate=1048576, OverwriteContentModifiedAfterUpdate=4194304,
+;; OverwriteFormatModifiedAfterUpdate=8388608
+(setq dlt:*datalink-skip-format-bit* 131072)
+(setq dlt:*datalink-update-row-height-bit* 262144)
+(setq dlt:*datalink-update-col-width-bit* 524288)
+(setq dlt:*datalink-allow-source-update-bit* 1048576)
+(setq dlt:*datalink-overwrite-content-bit* 4194304)
+(setq dlt:*datalink-overwrite-format-bit* 8388608)
+
+(defun dlt:remove-reactor ()
+  (if (and dlt:*table-reactor* (not (vlr-added-p dlt:*table-reactor*)))
+    (setq dlt:*table-reactor* nil)
+  )
+  (if (and dlt:*table-reactor* (vlr-added-p dlt:*table-reactor*))
+    (vlr-remove dlt:*table-reactor*)
+  )
+  (setq dlt:*table-reactor* nil)
+)
+
+(defun dlt:table-ename-p (e / ed objname)
+  (if (and e (setq ed (entget e)))
+    (or (= (cdr (assoc 0 ed)) "ACAD_TABLE")
+        (and
+          (not (vl-catch-all-error-p
+                 (setq objname
+                   (vl-catch-all-apply
+                     '(lambda () (vla-get-ObjectName (vlax-ename->vla-object e)))
+                   )
+                 )
+               )
+          )
+          (= objname "AcDbTable")
+        )
+    )
+    nil
+  )
+)
+
+(defun dlt:find-new-table-after (before / e found last)
+  (setq found nil)
+  (setq e (if before (entnext before) (entnext)))
+  (while e
+    (if (dlt:table-ename-p e)
+      (setq found e)
+    )
+    (setq e (entnext e))
+  )
+  ;; 保險：如果掃不到，就檢查最後一個物件
+  (if (null found)
+    (progn
+      (setq last (entlast))
+      (if (dlt:table-ename-p last)
+        (setq found last)
+      )
+    )
+  )
+  found
+)
+
+(defun dlt:function-defined-p (fn / name)
+  (if (= (type fn) 'SYM)
+    (progn
+      (setq name (strcase (vl-symbol-name fn)))
+      (if (vl-position name (atoms-family 1)) T nil)
+    )
+    T
+  )
+)
+
+(defun dlt:safe-call (fn args)
+  (if (dlt:function-defined-p fn)
+    (vl-catch-all-apply fn args)
+    nil
+  )
+)
+
+(defun dlt:safe-put (obj prop val)
+  (if obj
+    (vl-catch-all-apply 'vlax-put-property (list obj prop val))
+    nil
+  )
+)
+
+(defun dlt:safe-method (obj method args)
+  (if obj
+    (vl-catch-all-apply 'vlax-invoke-method (append (list obj method) args))
+    nil
+  )
+)
+
+(defun dlt:try-method (obj method args / res)
+  (if obj
+    (progn
+      (setq res (vl-catch-all-apply 'vlax-invoke-method (append (list obj method) args)))
+      (if (vl-catch-all-error-p res) nil T)
+    )
+    nil
+  )
+)
+
+(defun dlt:try-put (obj prop val / res)
+  (if obj
+    (progn
+      (setq res (vl-catch-all-apply 'vlax-put-property (list obj prop val)))
+      (if (vl-catch-all-error-p res) nil T)
+    )
+    nil
+  )
+)
+
+(defun dlt:get-active-document (/ acad)
+  (setq acad (vlax-get-acad-object))
+  (if acad
+    (vla-get-ActiveDocument acad)
+    nil
+  )
+)
+
+(defun dlt:ename-p (x)
+  (= (type x) 'ENAME)
+)
 
 (defun dlt:trim (s)
   (if s
@@ -27,1340 +160,801 @@
   )
 )
 
-(defun dlt:list-has-ci (item lst / key)
-  (setq key (strcase (dlt:trim item)))
-  (if (vl-some '(lambda (x) (= (strcase (dlt:trim x)) key)) lst)
-    T
-    nil
+(defun dlt:release (obj)
+  (if (and obj (= (type obj) 'VLA-OBJECT))
+    (vl-catch-all-apply 'vlax-release-object (list obj))
   )
 )
 
-(defun dlt:find-ci (item lst / key)
-  (setq key (strcase (dlt:trim item)))
-  (vl-some
-    '(lambda (x)
-       (if (= (strcase (dlt:trim x)) key)
-         x
-       )
-     )
-    lst
+(defun dlt:bit-clear (flags bitMask)
+  (if (/= (logand flags bitMask) 0)
+    (- flags bitMask)
+    flags
   )
 )
 
-(defun dlt:digits-only-p (s / i ok ch)
-  (setq s  (dlt:trim s)
-        i  1
-        ok (/= s ""))
-  (while (and ok (<= i (strlen s)))
-    (setq ch (substr s i 1))
-    (if (null (wcmatch ch "#"))
-      (setq ok nil)
-    )
-    (setq i (1+ i))
-  )
-  ok
-)
-
-(defun dlt:resolve-link-name (input names / txt idx)
-  (setq txt (dlt:trim input))
-  (cond
-    ((= txt "") nil)
-    ((dlt:find-ci txt names))
-    ((dlt:digits-only-p txt)
-     (setq idx (atoi txt))
-     (if (and (> idx 0) (<= idx (length names)))
-       (nth (1- idx) names)
-       nil
-     )
-    )
-    (T nil)
-  )
-)
-
-(defun dlt:set-dxf (ed code val / old)
-  (if (setq old (assoc code ed))
-    (subst (cons code val) old ed)
-    (append ed (list (cons code val)))
-  )
-)
-
-(defun dlt:ename-p (x)
-  (= (type x) 'ENAME)
-)
-
-(defun dlt:valid-point-p (p)
-  (and (= (type p) 'LIST)
-       (>= (length p) 2)
-       (numberp (car p))
-       (numberp (cadr p))
-       (or (= (length p) 2)
-           (numberp (caddr p))))
-)
-
-(defun dlt:function-defined-p (fnName / key)
-  (setq key (strcase (dlt:trim fnName)))
-  (if (vl-position key (atoms-family 1))
-    T
-    nil
-  )
-)
-
-(defun dlt:extract-datalink-name-from-detail (detail / p1 p2 out)
-  (setq out "")
-  (if (and detail (setq p1 (vl-string-search "\n" detail)))
-    (progn
-      (setq p2 (vl-string-search "\n" detail (1+ p1)))
-      (if p2
-        (setq out (substr detail (+ p1 2) (- p2 p1 1)))
-        (setq out (substr detail (+ p1 2)))
-      )
-    )
-  )
-  (dlt:trim out)
-)
-
-(defun dlt:get-datalink-name-from-object-local (en / ed out)
-  (setq out "")
-  (if (dlt:ename-p en)
-    (progn
-      (setq ed (entget en))
-      (if (and ed (= (cdr (assoc 0 ed)) "DATALINK"))
-        (progn
-          (setq out (dlt:extract-datalink-name-from-detail (cdr (assoc 301 ed))))
-          (if (= out "")
-            (setq out (dlt:trim (cdr (assoc 3 ed))))
-          )
-          (if (= out "")
-            (setq out (dlt:trim (cdr (assoc 300 ed))))
-          )
-        )
-      )
-    )
-  )
+(defun dlt:normalize-datalink-update-flag91 (flags / out)
+  (setq out (if flags flags 0))
+  ;; Data-only update: keep linked content updating, but do not import Excel/table formatting.
+  (setq out (logior out dlt:*datalink-skip-format-bit*))
+  (setq out (logior out dlt:*datalink-overwrite-content-bit*))
+  (setq out (dlt:bit-clear out dlt:*datalink-update-row-height-bit*))
+  (setq out (dlt:bit-clear out dlt:*datalink-update-col-width-bit*))
+  (setq out (dlt:bit-clear out dlt:*datalink-allow-source-update-bit*))
+  (setq out (dlt:bit-clear out dlt:*datalink-overwrite-format-bit*))
   out
 )
 
-(defun dlt:get-datalink-name-from-object-safe (en / out ret)
-  (setq out "")
-  (if (dlt:function-defined-p "DL:GET-DATALINK-NAME-FROM-OBJECT")
-    (progn
-      (setq ret (vl-catch-all-apply 'dl:get-datalink-name-from-object (list en)))
-      (if (not (vl-catch-all-error-p ret))
-        (setq out (dlt:trim ret))
+(defun dlt:set-first-dxf (ed code val / out done pair)
+  (setq out '()
+        done nil)
+  (foreach pair ed
+    (if (and (not done) (= (car pair) code))
+      (progn
+        (setq out (cons (cons code val) out))
+        (setq done T)
       )
+      (setq out (cons pair out))
     )
   )
-  (if (= out "")
-    (setq out (dlt:get-datalink-name-from-object-local en))
-  )
-  out
+  (reverse (if done out (cons (cons code val) out)))
 )
 
-(defun dlt:collect-ref-enames-from-ed (ed / out pr code val)
+(defun dlt:set-all-dxf (ed code val / out pair)
   (setq out '())
-  (foreach pr ed
-    (setq code (car pr)
-          val  (cdr pr))
-    (if (and (member code '(331 340 341 350 360))
-             (dlt:ename-p val)
-             (null (vl-position val out)))
-      (setq out (cons val out))
+  (foreach pair ed
+    (if (= (car pair) code)
+      (setq out (cons (cons code val) out))
+      (setq out (cons pair out))
     )
   )
   (reverse out)
 )
 
-(defun dlt:find-first-datalink-under-entity (root / queue visited en ed typ refs found steps)
-  (setq queue (if (dlt:ename-p root) (list root) '())
-        visited '()
-        found nil
-        steps 0)
-  (while (and queue (null found) (< steps 500))
-    (setq en (car queue)
-          queue (cdr queue)
-          steps (1+ steps))
-    (if (and (dlt:ename-p en) (null (vl-position en visited)))
-      (progn
-        (setq visited (cons en visited)
-              ed      (entget en)
-              typ     (if ed (cdr (assoc 0 ed)) ""))
-        (if (= typ "DATALINK")
-          (setq found en)
-          (progn
-            (setq refs (dlt:collect-ref-enames-from-ed ed))
-            (if refs
-              (setq queue (append queue refs))
+(defun dlt:get-existing-datalink-dict-ename (/ nod rec en)
+  (setq nod (namedobjdict)
+        rec (if (dlt:ename-p nod) (dictsearch nod "ACAD_DATALINK")))
+  (if rec
+    (progn
+      (setq en (or (cdr (assoc 360 rec))
+                   (cdr (assoc 350 rec))))
+      (if (dlt:ename-p en) en nil)
+    )
+    nil
+  )
+)
+
+(setq dlt:*dict-visited* nil)
+(setq dlt:*dict-vla-visited* nil)
+
+(defun dlt:safe-vla-objectname (obj / r)
+  (setq r (vl-catch-all-apply 'vla-get-ObjectName (list obj)))
+  (if (vl-catch-all-error-p r)
+    ""
+    (strcase (dlt:trim r))
+  )
+)
+
+(defun dlt:safe-vla-handle (obj / r)
+  (setq r (vl-catch-all-apply 'vla-get-Handle (list obj)))
+  (if (vl-catch-all-error-p r)
+    ""
+    (dlt:trim r)
+  )
+)
+
+(defun dlt:vla-object->ename-safe (obj / r)
+  (setq r (vl-catch-all-apply 'vlax-vla-object->ename (list obj)))
+  (if (and (not (vl-catch-all-error-p r)) (dlt:ename-p r))
+    r
+    nil
+  )
+)
+
+(defun dlt:collect-datalinks-from-dict (dictEname / rec key objEn objEd typ handle out)
+  (setq out '())
+  (if (dlt:ename-p dictEname)
+    (progn
+      (setq handle (cdr (assoc 5 (entget dictEname))))
+      (if (and handle (member handle dlt:*dict-visited*))
+        out
+        (progn
+          (if handle
+            (setq dlt:*dict-visited* (cons handle dlt:*dict-visited*))
+          )
+          (setq rec (dictnext dictEname T))
+          (while rec
+            (setq key   (cdr (assoc 3 rec))
+                  objEn (or (cdr (assoc 360 rec))
+                            (cdr (assoc 350 rec)))
+                  objEd (if (dlt:ename-p objEn) (entget objEn))
+                  typ   (if objEd (cdr (assoc 0 objEd))))
+            (cond
+              ((= typ "DATALINK")
+               (setq out (cons objEn out))
+              )
+              ((= typ "DICTIONARY")
+               (setq out (append (dlt:collect-datalinks-from-dict objEn) out))
+              )
             )
+            (setq rec (dictnext dictEname))
           )
         )
-      )
-    )
-  )
-  found
-)
-
-(defun dlt:get-linked-datalink-name-from-table (tableEname / dlObj)
-  (setq dlObj (dlt:find-first-datalink-under-entity tableEname))
-  (if dlObj
-    (dlt:get-datalink-name-from-object-safe dlObj)
-    ""
-  )
-)
-
-(defun dlt:get-entity-point (ename / ed p)
-  (setq ed (if ename (entget ename))
-        p  (if ed (cdr (assoc 10 ed))))
-  (if (dlt:valid-point-p p)
-    p
-    nil
-  )
-)
-
-(defun dlt:word-char-p (ch)
-  (if (and ch (= (type ch) 'STR) (= (strlen ch) 1))
-    (if (wcmatch (strcase ch) "[0-9A-Z_]")
-      T
-      nil
-    )
-    nil
-  )
-)
-
-(defun dlt:text-has-name-with-boundary-p (txtNorm nameNorm / from pos nLen tLen bIdx aIdx bCh aCh ok)
-  (setq ok nil
-        from 0
-        nLen (strlen nameNorm)
-        tLen (strlen txtNorm))
-  (while (and (not ok) (setq pos (vl-string-search nameNorm txtNorm from)))
-    (setq bIdx pos
-          aIdx (+ pos nLen 1)
-          bCh  (if (>= bIdx 1) (substr txtNorm bIdx 1) "")
-          aCh  (if (<= aIdx tLen) (substr txtNorm aIdx 1) ""))
-    (if (and (or (= bCh "") (not (dlt:word-char-p bCh)))
-             (or (= aCh "") (not (dlt:word-char-p aCh))))
-      (setq ok T)
-      (setq from (1+ pos))
-    )
-  )
-  ok
-)
-
-(defun dlt:resolve-link-in-text (txt names / direct txtNorm best bestLen n nn)
-  ; 鄰近文字比對僅接受「已存在 Data Link 名稱」。
-  ; 允許在長字串中命中，但需符合前後邊界，避免亂配。
-  (setq direct (dlt:resolve-link-by-text txt names))
-  (if direct
-    direct
-    (progn
-      (setq txtNorm (strcase (dlt:normalize-link-name txt))
-            best    nil
-            bestLen 0)
-      (foreach n names
-        (setq nn (strcase (dlt:normalize-link-name n)))
-        (if (and (/= nn "")
-                 (dlt:text-has-name-with-boundary-p txtNorm nn)
-                 (> (strlen nn) bestLen))
-          (setq best n
-                bestLen (strlen nn))
-        )
-      )
-      best
-    )
-  )
-)
-
-(defun dlt:collect-link-text-candidates (names / flt ss i en txt link p out)
-  (setq out '())
-  (setq flt (list '(0 . "TEXT,MTEXT,ATTRIB,ATTDEF") (cons 410 (getvar "CTAB"))))
-  (setq ss (ssget "_X" flt))
-  (if ss
-    (progn
-      (setq i 0)
-      (while (< i (sslength ss))
-        (setq en   (ssname ss i)
-              txt  (dlt:get-text-from-entity en)
-              link (if (/= txt "") (dlt:resolve-link-in-text txt names) nil)
-              p    (if link (dlt:get-entity-point en) nil))
-        (if (and link p)
-          ; 項目格式: (linkName point text ename)
-          (setq out (cons (list link p txt en) out))
-        )
-        (setq i (1+ i))
       )
     )
   )
   out
 )
 
-(defun dlt:short-text (s maxLen / t)
-  (setq t (dlt:trim s))
-  (if (and (> maxLen 3) (> (strlen t) maxLen))
-    (strcat (substr t 1 (- maxLen 3)) "...")
-    t
-  )
-)
-
-(defun dlt:best-near-text-candidate-for-table (tableEname candidates / tp best bestD c cp d)
-  (setq tp (or (dlt:get-table-insertion-point tableEname)
-               (dlt:get-entity-point tableEname))
-        best nil
-        bestD nil)
-  (if (and (dlt:valid-point-p tp) candidates)
-    (foreach c candidates
-      (setq cp (cadr c))
-      (if (dlt:valid-point-p cp)
+(defun dlt:collect-datalinks-from-vla-dict (dictObj / out item oname handle en)
+  (setq out '())
+  (if (and dictObj (= (type dictObj) 'VLA-OBJECT))
+    (progn
+      (setq handle (dlt:safe-vla-handle dictObj))
+      (if (and (/= handle "") (member handle dlt:*dict-vla-visited*))
+        out
         (progn
-          (setq d (distance tp cp))
-          (if (or (null bestD) (< d bestD))
-            (setq best c
-                  bestD d)
+          (if (/= handle "")
+            (setq dlt:*dict-vla-visited* (cons handle dlt:*dict-vla-visited*))
           )
-        )
-      )
-    )
-  )
-  best
-)
-
-(defun dlt:normalize-link-name (s)
-  (if (dlt:function-defined-p "DL:SANITIZE-NAME")
-    (dl:sanitize-name s)
-    (dlt:trim s)
-  )
-)
-
-(defun dlt:resolve-link-by-text (txt names / txtNorm)
-  (setq txt (dlt:trim txt))
-  (if (= txt "")
-    nil
-    (or
-      (dlt:find-ci txt names)
-      (progn
-        (setq txtNorm (strcase (dlt:normalize-link-name txt)))
-        (vl-some
-          '(lambda (n)
-             (if (= (strcase (dlt:normalize-link-name n)) txtNorm)
-               n
-             )
-           )
-          names
-        )
-      )
-    )
-  )
-)
-
-(defun dlt:get-table-handle (ename / ed h)
-  (setq ed (if ename (entget ename))
-        h  (if ed (cdr (assoc 5 ed))))
-  (if h h "")
-)
-
-(defun dlt:get-table-insertion-point (tableEname / obj p)
-  (setq obj (if tableEname (vlax-ename->vla-object tableEname)))
-  (if obj
-    (progn
-      (setq p (vl-catch-all-apply 'vlax-get-property (list obj 'InsertionPoint)))
-      (if (= (type obj) 'VLA-OBJECT)
-        (vl-catch-all-apply 'vlax-release-object (list obj))
-      )
-      (if (vl-catch-all-error-p p)
-        nil
-        (progn
-          (if (= (type p) 'VARIANT)
-            (setq p (vlax-variant-value p))
-          )
-          (setq p
-                (cond
-                  ((= (type p) 'LIST) p)
-                  ((= (type p) 'SAFEARRAY) (vlax-safearray->list p))
-                  (T nil)
-                )
-          )
-          (if (dlt:valid-point-p p)
-            p
-            nil
-          )
-        )
-      )
-    )
-    nil
-  )
-)
-
-(defun dlt:copy-vla-property-safe (src dst prop / v)
-  (if (and src dst
-           (vlax-property-available-p src prop)
-           (vlax-property-available-p dst prop T))
-    (progn
-      (setq v (vl-catch-all-apply 'vlax-get-property (list src prop)))
-      (if (not (vl-catch-all-error-p v))
-        (vl-catch-all-apply 'vlax-put-property (list dst prop v))
-      )
-    )
-  )
-  T
-)
-
-(defun dlt:copy-table-basic-props (srcEname dstEname / src dst)
-  (setq src (if srcEname (vlax-ename->vla-object srcEname))
-        dst (if dstEname (vlax-ename->vla-object dstEname)))
-  (if (and src dst)
-    (progn
-      (dlt:copy-vla-property-safe src dst 'Layer)
-      (dlt:copy-vla-property-safe src dst 'Linetype)
-      (dlt:copy-vla-property-safe src dst 'LinetypeScale)
-      (dlt:copy-vla-property-safe src dst 'Lineweight)
-      (dlt:copy-vla-property-safe src dst 'Color)
-      (dlt:copy-vla-property-safe src dst 'Rotation)
-    )
-  )
-  (if (= (type src) 'VLA-OBJECT)
-    (vl-catch-all-apply 'vlax-release-object (list src))
-  )
-  (if (= (type dst) 'VLA-OBJECT)
-    (vl-catch-all-apply 'vlax-release-object (list dst))
-  )
-  T
-)
-
-(defun dlt:guess-link-name-from-table (tableEname names / tableObj rows cols maxRows maxCols row col txt hit)
-  (setq tableObj (if tableEname (vlax-ename->vla-object tableEname))
-        hit nil)
-  (if (and tableObj (= (vla-get-ObjectName tableObj) "AcDbTable"))
-    (progn
-      (setq rows (vlax-get-property tableObj 'Rows)
-            cols (vlax-get-property tableObj 'Columns)
-            maxRows (min rows 12)
-            maxCols (min cols 8))
-      ; 以左上區域做快速比對（標題/表頭通常在這裡）
-      (setq row 0)
-      (while (and (< row maxRows) (null hit))
-        (setq col 0)
-        (while (and (< col maxCols) (null hit))
-          (setq txt (dlt:get-cell-text-safe tableObj row col))
-          (if (/= txt "")
-            (setq hit (dlt:resolve-link-by-text txt names))
-          )
-          (setq col (1+ col))
-        )
-        (setq row (1+ row))
-      )
-    )
-  )
-  (if (= (type tableObj) 'VLA-OBJECT)
-    (vl-catch-all-apply 'vlax-release-object (list tableObj))
-  )
-  hit
-)
-
-(defun dlt:rebuild-table-by-link (tableEname linkName / insPt ok newTable)
-  (setq insPt (dlt:get-table-insertion-point tableEname))
-  (if (null insPt)
-    (progn
-      (setq dlt:*last-create-failure-reason* "no_insertion_point")
-      nil
-    )
-    (progn
-      (setq ok (dlt:try-create-table-by-link linkName insPt))
-      (if ok
-        (progn
-          (setq newTable dlt:*last-created-table-ename*)
-          (if newTable
-            (dlt:copy-table-basic-props tableEname newTable)
-          )
-          (entdel tableEname)
-          T
-        )
-        nil
-      )
-    )
-  )
-)
-
-(defun dlt:print-link-names (names / i)
-  (setq i 1)
-  (prompt "\n--- 目前 Data Link 清單 ---")
-  (foreach n names
-    (prompt (strcat "\n  " (itoa i) ". " n))
-    (setq i (1+ i))
-  )
-)
-
-(defun dlt:init-command-s-flag ()
-  ; atoms-family 1 為已定義函數符號，避免直接呼叫不存在函數
-  (if (vl-position "COMMAND-S" (atoms-family 1))
-    (setq dlt:*has-command-s* T)
-    (setq dlt:*has-command-s* nil)
-  )
-)
-
-(defun dlt:run-safe-command (args / ret)
-  ; 優先用 command-s，避免互動命令卡在等待輸入
-  (if dlt:*has-command-s*
-    (vl-catch-all-apply 'command-s args)
-    'dlt_no_command_s
-  )
-)
-
-(defun dlt:flush-command (/ tries)
-  (setq tries 0)
-  (while (and (> (getvar "CMDACTIVE") 0) (< tries 8))
-    (if dlt:*has-command-s*
-      (vl-catch-all-apply 'command-s (list (strcat (chr 3) (chr 3))))
-      (setq tries 8)
-    )
-    (setq tries (1+ tries))
-  )
-  (if (> (getvar "CMDACTIVE") 0)
-    (setq dlt:*last-create-failure-reason* "cancel_incomplete")
-  )
-)
-
-(defun dlt:get-new-table-ename-after (entBefore / en ed lastTable)
-  (setq lastTable nil
-        en (if entBefore (entnext entBefore) (entnext)))
-  (while en
-    (setq ed (entget en))
-    (if (and ed (= (cdr (assoc 0 ed)) "ACAD_TABLE"))
-      (setq lastTable en)
-    )
-    (setq en (entnext en))
-  )
-  lastTable
-)
-
-(defun dlt:get-cell-text-safe (tableObj row col / v)
-  (setq v (vl-catch-all-apply 'vlax-invoke-method (list tableObj 'GetText row col)))
-  (if (vl-catch-all-error-p v)
-    ""
-    (dlt:trim v)
-  )
-)
-
-(defun dlt:get-text-from-entity (ename / obj oname txt)
-  (setq txt "")
-  (if ename
-    (progn
-      (setq obj (vlax-ename->vla-object ename))
-      (if obj
-        (progn
-          (setq oname (vla-get-ObjectName obj))
-          (if (wcmatch oname "AcDbText,AcDbMText,AcDbAttributeDefinition,AcDbAttribute")
-            (setq txt (vla-get-TextString obj))
-          )
-        )
-      )
-    )
-  )
-  (dlt:trim txt)
-)
-
-(defun dlt:get-input-by-pick (/ ent ename txt)
-  (setq txt "")
-  (if (setq ent (entsel "\n選取作為 Data Link 名稱的文字物件 (Enter/Space改手動輸入): "))
-    (progn
-      (setq ename (car ent)
-            txt   (dlt:get-text-from-entity ename))
-      (if (= txt "")
-        (prompt "\n所選物件不是可用文字（TEXT/MTEXT/ATTRIB/ATTDEF）或內容為空。")
-      )
-    )
-  )
-  txt
-)
-
-(defun dlt:cell-merged-p (tableObj row col / v)
-  (setq v (vl-catch-all-apply 'vlax-invoke-method (list tableObj 'IsMergedCell row col)))
-  (if (vl-catch-all-error-p v)
-    nil
-    (if (or (= v :vlax-true) (= v T) (= v 1))
-      T
-      nil
-    )
-  )
-)
-
-(defun dlt:row-empty-p (tableObj row / cols col hasText hasMerged)
-  (setq cols (vlax-get-property tableObj 'Columns)
-        col  0
-        hasText nil
-        hasMerged nil)
-  (while (and (< col cols) (not hasText) (not hasMerged))
-    (if (dlt:cell-merged-p tableObj row col)
-      (setq hasMerged T)
-      (if (/= (dlt:get-cell-text-safe tableObj row col) "")
-        (setq hasText T)
-      )
-    )
-    (setq col (1+ col))
-  )
-  (if hasMerged
-    nil
-    (not hasText)
-  )
-)
-
-(defun dlt:remove-empty-rows-from-table (tableEname / tableObj row removed canDelete ret)
-  (setq removed 0
-        tableObj (if tableEname (vlax-ename->vla-object tableEname)))
-  (if (and tableObj (= (vla-get-ObjectName tableObj) "AcDbTable"))
-    (progn
-      ; 自後往前刪，避免索引位移；保留第0列，避免刪到標題列
-      (setq row (1- (vlax-get-property tableObj 'Rows)))
-      (while (>= row 1)
-        (setq canDelete (dlt:row-empty-p tableObj row))
-        (if canDelete
-          (progn
-            (setq ret (vl-catch-all-apply 'vlax-invoke-method (list tableObj 'DeleteRows row 1)))
-            (if (not (vl-catch-all-error-p ret))
-              (setq removed (1+ removed))
-            )
-          )
-        )
-        (setq row (1- row))
-      )
-    )
-  )
-  (if tableObj (vlax-release-object tableObj))
-  removed
-)
-
-(defun dlt:resolve-msjh-font-file (/ found)
-  (if (and dlt:*msjh-font-resolved* (/= dlt:*msjh-font-resolved* ""))
-    dlt:*msjh-font-resolved*
-    (progn
-      (setq found
-            (vl-some
-              '(lambda (f)
-                 (if (or (findfile f)
-                         (findfile (strcat "C:\\Windows\\Fonts\\" f)))
-                   f
-                 )
+          (vlax-for item dictObj
+            (setq oname (dlt:safe-vla-objectname item))
+            (cond
+              ((wcmatch oname "*DICTIONARY*")
+               (foreach en (dlt:collect-datalinks-from-vla-dict item)
+                 (setq out (dlt:add-unique-ename en out))
                )
-              dlt:*text-font-candidates*))
-      (if found
-        (progn
-          (setq dlt:*msjh-font-resolved* found)
-          found
+              )
+              ((wcmatch oname "*DATALINK*")
+               (setq en (dlt:vla-object->ename-safe item))
+               (if en
+                 (setq out (dlt:add-unique-ename en out))
+               )
+              )
+            )
+          )
         )
-        nil
       )
     )
   )
+  out
 )
 
-(defun dlt:ensure-msjh-text-style (/ stEn stEd fontFile)
-  (setq fontFile (dlt:resolve-msjh-font-file))
-  (if (null fontFile)
-    nil
+(defun dlt:get-datalink-enames-vla (/ doc db dicts dictObj out)
+  (setq out '()
+        doc (dlt:get-active-document))
+  (if doc
     (progn
-      (setq stEn (tblobjname "STYLE" dlt:*text-style-name*))
-      (if (null stEn)
+      (setq db (vl-catch-all-apply 'vla-get-Database (list doc)))
+      (if (not (vl-catch-all-error-p db))
         (progn
-          (entmake
-            (list
-              '(0 . "STYLE")
-              (cons 2 dlt:*text-style-name*)
-              '(70 . 0)
-              '(40 . 0.0)
-              '(41 . 1.0)
-              '(50 . 0.0)
-              '(71 . 0)
-              '(42 . 2.5)
-              (cons 3 fontFile)
-              '(4 . "")
+          (setq dicts (vl-catch-all-apply 'vla-get-Dictionaries (list db)))
+          (if (not (vl-catch-all-error-p dicts))
+            (progn
+              (setq dictObj (vl-catch-all-apply 'vla-Item (list dicts "ACAD_DATALINK")))
+              (if (not (vl-catch-all-error-p dictObj))
+                (progn
+                  (setq dlt:*dict-vla-visited* nil)
+                  (setq out (dlt:collect-datalinks-from-vla-dict dictObj))
+                  (dlt:release dictObj)
+                )
+              )
+              (dlt:release dicts)
             )
           )
-          (setq stEn (tblobjname "STYLE" dlt:*text-style-name*))
         )
       )
-      (if stEn
+    )
+  )
+  out
+)
+
+(defun dlt:add-unique-ename (en lst)
+  (if (vl-position en lst)
+    lst
+    (cons en lst)
+  )
+)
+
+(defun dlt:get-nod-dictionary-enames (/ nod rec en recEd out)
+  (setq out '()
+        nod (namedobjdict))
+  (if (dlt:ename-p nod)
+    (progn
+      (setq rec (dictnext nod T))
+      (while rec
+        (setq en (or (cdr (assoc 360 rec))
+                     (cdr (assoc 350 rec))))
+        (if (and (dlt:ename-p en)
+                 (setq recEd (entget en))
+                 (= (cdr (assoc 0 recEd)) "DICTIONARY"))
+          (setq out (append out (list en)))
+        )
+        (setq rec (dictnext nod))
+      )
+    )
+  )
+  out
+)
+
+(defun dlt:get-datalink-enames-all (/ out dictE dictEnames d en ed item items)
+  (setq out '())
+
+  ;; Step 1 - reuse the datalink_auto scanner if it is already loaded.
+  (if (dlt:function-defined-p 'dl:get-datalink-items-all)
+    (progn
+      (setq items (vl-catch-all-apply 'dl:get-datalink-items-all '()))
+      (if (and (not (vl-catch-all-error-p items)) items)
+        (foreach item items
+          (if (and (= (type item) 'LIST) (dlt:ename-p (car item)))
+            (setq out (dlt:add-unique-ename (car item) out))
+          )
+        )
+      )
+    )
+  )
+
+  ;; Step 2 - ActiveX Dictionary enumeration, same source as Data Link Manager.
+  (if (null out)
+    (foreach item (dlt:get-datalink-enames-vla)
+      (setq out (dlt:add-unique-ename item out))
+    )
+  )
+
+  ;; Step 3 - standard ACAD_DATALINK dictionary.
+  (if (null out)
+    (progn
+      (setq dictE (dlt:get-existing-datalink-dict-ename))
+      (if (dlt:ename-p dictE)
         (progn
-          (setq stEd (entget stEn))
-          (setq stEd (dlt:set-dxf stEd 3 fontFile))
-          (setq stEd (dlt:set-dxf stEd 4 ""))
-          (setq stEd (dlt:set-dxf stEd 40 0.0))
-          (setq stEd (dlt:set-dxf stEd 41 1.0))
-          (setq stEd (dlt:set-dxf stEd 50 0.0))
-          (setq stEd (dlt:set-dxf stEd 71 0))
-          (entmod stEd)
-          (entupd stEn)
+          (setq dlt:*dict-visited* nil)
+          (foreach item (dlt:collect-datalinks-from-dict dictE)
+            (setq out (dlt:add-unique-ename item out))
+          )
+        )
+      )
+    )
+  )
+
+  ;; Step 4 - fallback: scan all top-level NOD dictionaries.
+  (if (null out)
+    (progn
+      (setq dictEnames (dlt:get-nod-dictionary-enames)
+            dlt:*dict-visited* nil)
+      (foreach d dictEnames
+        (foreach item (dlt:collect-datalinks-from-dict d)
+          (setq out (dlt:add-unique-ename item out))
+        )
+      )
+    )
+  )
+
+  ;; Step 5 - last fallback: scan database entities.
+  (if (null out)
+    (progn
+      (setq en (entnext))
+      (while en
+        (setq ed (entget en))
+        (if (and ed (= (cdr (assoc 0 ed)) "DATALINK"))
+          (setq out (dlt:add-unique-ename en out))
+        )
+        (setq en (entnext en))
+      )
+    )
+  )
+  out
+)
+
+(defun dlt:set-datalink-data-only (en / ed old91 new91 newEd)
+  (if (and (dlt:ename-p en)
+           (setq ed (entget en))
+           (= (cdr (assoc 0 ed)) "DATALINK"))
+    (progn
+      (setq old91 (cdr (assoc 91 ed))
+            new91 (dlt:normalize-datalink-update-flag91 old91)
+            newEd ed)
+      ;; DATALINK usually stores update options in both the entity body and its custom data map.
+      ;; All 91 groups in this entity are update-option flags in the Data Links we create/read.
+      (setq newEd (dlt:set-all-dxf newEd 91 new91))
+      (setq newEd (dlt:set-first-dxf newEd 92 1))
+      (if (entmod newEd)
+        (progn
+          (entupd en)
           T
         )
         nil
       )
     )
+    nil
   )
 )
 
-(defun dlt:set-entity-table-props (ename / ed)
-  (if ename
+(defun dlt:set-all-datalinks-data-only (/ links count en)
+  (setq count 0
+        links (dlt:get-datalink-enames-all))
+  (foreach en links
+    (if (dlt:set-datalink-data-only en)
+      (setq count (1+ count))
+    )
+  )
+  count
+)
+
+(defun dlt:get-table-style-dict (/ doc db dicts dict)
+  (setq doc (dlt:get-active-document))
+  (if doc
     (progn
-      (setq ed (entget ename))
-      (if ed
+      (setq db (vl-catch-all-apply 'vla-get-Database (list doc)))
+      (if (vl-catch-all-error-p db)
+        nil
         (progn
-          (setq ed
-                (vl-remove-if
-                  '(lambda (x) (or (= (car x) 420) (= (car x) 430) (= (car x) 440)))
-                  ed))
-          ; 框線顏色：ByLayer
-          (setq ed (dlt:set-dxf ed 62 256))
-          ; 框線線型：ByBlock
-          (setq ed (dlt:set-dxf ed 6 "ByBlock"))
-          ; 框線線粗：ByBlock
-          (setq ed (dlt:set-dxf ed 370 -2))
-          (entmod ed)
-          (entupd ename)
+          (setq dicts (vl-catch-all-apply 'vla-get-Dictionaries (list db)))
+          (if (vl-catch-all-error-p dicts)
+            nil
+            (progn
+              (setq dict (dlt:safe-method dicts 'Item (list "ACAD_TABLESTYLE")))
+              (if (= (type dict) 'VLA-OBJECT) dict nil)
+            )
+          )
         )
       )
     )
-  )
-  T
-)
-
-(defun dlt:safe-invoke-method (obj method args / ret)
-  (setq ret (vl-catch-all-apply 'vlax-invoke-method (append (list obj method) args)))
-  (if (vl-catch-all-error-p ret)
     nil
-    T
   )
 )
 
-(defun dlt:safe-put-property (obj prop value / ret)
-  (setq ret (vl-catch-all-apply 'vlax-put-property (list obj prop value)))
-  (if (vl-catch-all-error-p ret)
-    nil
-    T
-  )
-)
-
-(defun dlt:apply-gridcolor-bylayer (tableObj rows cols / clr row col)
-  ; 先嘗試用 AcCmColor 物件設定（較完整）
-  (setq clr (vl-catch-all-apply 'vla-get-TrueColor (list tableObj)))
-  (if (not (vl-catch-all-error-p clr))
+(defun dlt:get-or-create-table-style (/ dict sty)
+  (setq dict (dlt:get-table-style-dict))
+  (if dict
     (progn
-      (dlt:safe-put-property clr 'ColorIndex 256)
+      (setq sty (dlt:safe-method dict 'Item (list dlt:*table-style-name*)))
+      (if (/= (type sty) 'VLA-OBJECT)
+        (setq sty (dlt:safe-method dict 'AddObject (list dlt:*table-style-name* "AcDbTableStyle")))
+      )
+      (if (= (type sty) 'VLA-OBJECT) sty nil)
+    )
+    nil
+  )
+)
 
-      ; 列型層級（Title/Header/Data）框線顏色
-      (dlt:safe-invoke-method tableObj 'SetGridColor (list 1 63 clr))
-      (dlt:safe-invoke-method tableObj 'SetGridColor (list 2 63 clr))
-      (dlt:safe-invoke-method tableObj 'SetGridColor (list 4 63 clr))
-      (dlt:safe-invoke-method tableObj 'SetGridColor (list 7 63 clr))
+(defun dlt:set-row-format-on-target (target rowType / ok)
+  (setq ok nil)
+  (if target
+    (progn
+      (if (dlt:try-method target 'SetTextHeight (list rowType dlt:*table-text-height*))
+        (setq ok T)
+      )
+      (if (dlt:try-method target 'SetAlignment (list rowType dlt:*table-alignment*))
+        (setq ok T)
+      )
+      (if (dlt:try-method target 'SetTextStyle (list rowType dlt:*table-text-style*))
+        (setq ok T)
+      )
+    )
+  )
+  ok
+)
 
-      ; 儲存格層級覆寫：把每格框線都設回 ByLayer
+(defun dlt:set-grid-format-on-target (target clr / rowType ok)
+  (setq ok nil)
+  (foreach rowType '(1 2 4 7)
+    (if clr
+      (progn
+        (if (dlt:try-method target 'SetGridColor (list rowType dlt:*table-grid-types-all* clr))
+          (setq ok T)
+        )
+        ;; Some AutoCAD table-style builds expose the argument order as grid type, row type.
+        (if (dlt:try-method target 'SetGridColor (list dlt:*table-grid-types-all* rowType clr))
+          (setq ok T)
+        )
+      )
+    )
+    (if (dlt:try-method target 'SetGridLineWeight (list rowType dlt:*table-grid-types-all* dlt:*table-lineweight*))
+      (setq ok T)
+    )
+    (if (dlt:try-method target 'SetGridLineWeight (list dlt:*table-grid-types-all* rowType dlt:*table-lineweight*))
+      (setq ok T)
+    )
+  )
+  ok
+)
+
+(defun dlt:ensure-table-style-format (tableObj / sty clr rowType)
+  (setq sty (dlt:get-or-create-table-style))
+  (if sty
+    (progn
+      (dlt:try-put sty 'Name dlt:*table-style-name*)
+      (dlt:try-put sty 'Description "Data Link table style managed by DLTABLEUI")
+      (setq clr (dlt:safe-call 'vla-get-TrueColor (list tableObj)))
+      (if (and clr (not (vl-catch-all-error-p clr)) (= (type clr) 'VLA-OBJECT))
+        (dlt:safe-put clr 'ColorIndex dlt:*table-color-index*)
+        (setq clr nil)
+      )
+      (foreach rowType '(1 2 4 7)
+        (dlt:set-row-format-on-target sty rowType)
+      )
+      (dlt:set-grid-format-on-target sty clr)
+      (if (and clr (= (type clr) 'VLA-OBJECT))
+        (vl-catch-all-apply 'vlax-release-object (list clr))
+      )
+      dlt:*table-style-name*
+    )
+    nil
+  )
+)
+
+(defun dlt:clear-table-style-overrides (obj)
+  ;; Safe attempts only. Some AutoCAD ActiveX builds expose this, others do not.
+  (or
+    (dlt:try-method obj 'ClearTableStyleOverrides '())
+    (dlt:try-method obj 'ClearTableStyleOverrides (list 0))
+    (dlt:try-method obj 'ClearTableStyleOverrides (list 7))
+    (dlt:try-method obj 'RemoveAllOverrides '())
+  )
+)
+
+(defun dlt:apply-cell-text-format (obj rows cols / row col)
+  (if (and obj (vlax-method-applicable-p obj 'SetCellTextHeight))
+    (progn
       (setq row 0)
       (while (< row rows)
         (setq col 0)
         (while (< col cols)
-          (dlt:safe-invoke-method tableObj 'SetCellGridColor (list row col 15 clr))
-          (dlt:safe-invoke-method tableObj 'SetCellGridColor (list row col 63 clr))
+          (dlt:try-method obj 'SetCellTextHeight (list row col dlt:*table-text-height*))
           (setq col (1+ col))
         )
         (setq row (1+ row))
       )
-      (if (= (type clr) 'VLA-OBJECT)
-        (vl-catch-all-apply 'vlax-release-object (list clr))
-      )
     )
   )
-
-  ; 部分版本只支援整數色碼 API，做相容回退
-  (dlt:safe-invoke-method tableObj 'SetGridColor2 (list 1 63 256))
-  (dlt:safe-invoke-method tableObj 'SetGridColor2 (list 2 63 256))
-  (dlt:safe-invoke-method tableObj 'SetGridColor2 (list 4 63 256))
-  (dlt:safe-invoke-method tableObj 'SetGridColor2 (list 7 63 256))
-
-  (setq row 0)
-  (while (< row rows)
-    (setq col 0)
-    (while (< col cols)
-      (dlt:safe-invoke-method tableObj 'SetCellGridColor2 (list row col 15 256))
-      (dlt:safe-invoke-method tableObj 'SetCellGridColor2 (list row col 63 256))
-      (setq col (1+ col))
-    )
-    (setq row (1+ row))
-  )
-  T
-)
-
-(defun dlt:apply-table-format (tableEname / tableObj rows cols row col)
-  (setq tableObj (if tableEname (vlax-ename->vla-object tableEname)))
-  (if (and tableObj (= (vla-get-ObjectName tableObj) "AcDbTable"))
+  (if (and obj (vlax-method-applicable-p obj 'SetCellAlignment))
     (progn
-      ; 框線顏色：ByLayer
-      (vl-catch-all-apply 'vla-put-Color (list tableObj 256))
-      ; 框線線型/線粗：ByBlock
-      (vl-catch-all-apply 'vla-put-Linetype (list tableObj "ByBlock"))
-      (vl-catch-all-apply 'vla-put-Lineweight (list tableObj -2))
-
-      (setq rows (vlax-get-property tableObj 'Rows)
-            cols (vlax-get-property tableObj 'Columns))
-
-      ; 儲存格邊距
-      (dlt:safe-put-property tableObj 'HorzCellMargin dlt:*cell-h-margin*)
-      (dlt:safe-put-property tableObj 'VertCellMargin dlt:*cell-v-margin*)
-
-      ; 套用欄寬
-      (setq col 0)
-      (while (< col cols)
-        (dlt:safe-invoke-method tableObj 'SetColumnWidth (list col dlt:*cell-width*))
-        (setq col (1+ col))
-      )
-
-      ; 套用列高
       (setq row 0)
       (while (< row rows)
-        (dlt:safe-invoke-method tableObj 'SetRowHeight (list row dlt:*cell-height*))
+        (setq col 0)
+        (while (< col cols)
+          (dlt:try-method obj 'SetCellAlignment (list row col dlt:*table-alignment*))
+          (setq col (1+ col))
+        )
         (setq row (1+ row))
       )
-
-      ; 優先逐儲存格設定文字高；若版本不支援，再回退到列型設定
-      (if (vlax-method-applicable-p tableObj 'SetCellTextHeight)
-        (progn
-          (setq row 0)
-          (while (< row rows)
-            (setq col 0)
-            (while (< col cols)
-              (dlt:safe-invoke-method tableObj 'SetCellTextHeight (list row col dlt:*text-height*))
-              (setq col (1+ col))
-            )
-            (setq row (1+ row))
-          )
-        )
-        (progn
-          (dlt:safe-invoke-method tableObj 'SetTextHeight (list 1 dlt:*text-height*)) ; Title
-          (dlt:safe-invoke-method tableObj 'SetTextHeight (list 2 dlt:*text-height*)) ; Header
-          (dlt:safe-invoke-method tableObj 'SetTextHeight (list 4 dlt:*text-height*)) ; Data
-        )
-      )
-
-      ; 對齊方式：正中
-      (if (vlax-method-applicable-p tableObj 'SetCellAlignment)
-        (progn
-          (setq row 0)
-          (while (< row rows)
-            (setq col 0)
-            (while (< col cols)
-              (dlt:safe-invoke-method tableObj 'SetCellAlignment (list row col dlt:*cell-align-middle-center*))
-              (setq col (1+ col))
-            )
-            (setq row (1+ row))
-          )
-        )
-        (progn
-          (dlt:safe-invoke-method tableObj 'SetAlignment (list 1 dlt:*cell-align-middle-center*)) ; Title
-          (dlt:safe-invoke-method tableObj 'SetAlignment (list 2 dlt:*cell-align-middle-center*)) ; Header
-          (dlt:safe-invoke-method tableObj 'SetAlignment (list 4 dlt:*cell-align-middle-center*)) ; Data
-        )
-      )
-
-      ; 文字樣式：Standard
-      (if (tblsearch "STYLE" dlt:*text-style-name*)
-        (progn
-          (dlt:safe-invoke-method tableObj 'SetTextStyle (list 1 dlt:*text-style-name*)) ; Title
-          (dlt:safe-invoke-method tableObj 'SetTextStyle (list 2 dlt:*text-style-name*)) ; Header
-          (dlt:safe-invoke-method tableObj 'SetTextStyle (list 4 dlt:*text-style-name*)) ; Data
-        )
-        (prompt "\n警告：找不到文字樣式 Standard，本次未強制套用文字樣式。")
-      )
-
-      ; 文字顏色：ByBlock（0）
-      (dlt:safe-invoke-method tableObj 'SetColor (list 1 0)) ; Title
-      (dlt:safe-invoke-method tableObj 'SetColor (list 2 0)) ; Header
-      (dlt:safe-invoke-method tableObj 'SetColor (list 4 0)) ; Data
-      (dlt:safe-invoke-method tableObj 'SetContentColor (list 1 0)) ; Title
-      (dlt:safe-invoke-method tableObj 'SetContentColor (list 2 0)) ; Header
-      (dlt:safe-invoke-method tableObj 'SetContentColor (list 4 0)) ; Data
-
-      ; 文字旋轉：0
-      (dlt:safe-invoke-method tableObj 'SetTextRotation (list 1 0.0)) ; Title
-      (dlt:safe-invoke-method tableObj 'SetTextRotation (list 2 0.0)) ; Header
-      (dlt:safe-invoke-method tableObj 'SetTextRotation (list 4 0.0)) ; Data
-
-      ; 框線顏色：強制清掉儲存格黑色覆寫，統一回 ByLayer
-      (dlt:apply-gridcolor-bylayer tableObj rows cols)
-
-      (dlt:safe-invoke-method tableObj 'Update '())
     )
   )
-  (if tableObj (vlax-release-object tableObj))
-  ; 再次清除 true color override，並套用框線 ByLayer + 線型/線粗 ByBlock
-  (dlt:set-entity-table-props tableEname)
   T
 )
 
-(defun dlt:try-create-table-by-link (linkName insPt / patterns args ret ok entBefore newTable)
-  (setq ok nil)
-  (setq dlt:*last-removed-empty-rows* 0)
-  (setq dlt:*last-create-failure-reason* nil)
-  (setq dlt:*last-created-table-ename* nil)
-
-  (if (not dlt:*has-command-s*)
+(defun dlt:apply-cell-grid-format (obj clr rows cols / row col)
+  (if (and obj clr (= (type clr) 'VLA-OBJECT) (vlax-method-applicable-p obj 'SetCellGridColor))
     (progn
-      (setq dlt:*last-create-failure-reason* "command_s_unavailable")
-      nil
+      (setq row 0)
+      (while (< row rows)
+        (setq col 0)
+        (while (< col cols)
+          (dlt:try-method obj 'SetCellGridColor (list row col 15 clr))
+          (dlt:try-method obj 'SetCellGridColor (list row col dlt:*table-grid-types-all* clr))
+          (setq col (1+ col))
+        )
+        (setq row (1+ row))
+      )
     )
+  )
+  (if (and obj (vlax-method-applicable-p obj 'SetCellGridLineWeight))
     (progn
-      (dlt:flush-command)
-      (setq entBefore (entlast))
-      (setq patterns
-            (list
-              ; 依你目前介面的實際流程：
-              ; 1) -TABLE 2) 在「行數」題按 L(資料連結) 3) 輸入 Data Link 名稱 4) 指定插入點
-              (list "_.-TABLE" "_L" linkName insPt)
-              (list "_.-TABLE" "_L" linkName insPt "")
-              (list "_.-TABLE" "L" linkName insPt)
-              (list "_.-TABLE" "L" linkName insPt "")
-            )
-      )
-
-      (foreach args patterns
-        (if (not ok)
-          (progn
-            (setq ret (dlt:run-safe-command args))
-            (if (vl-catch-all-error-p ret)
-              (progn
-                (setq dlt:*last-create-failure-reason* "command_error")
-                (dlt:flush-command)
-              )
-              (progn
-                (if (> (getvar "CMDACTIVE") 0)
-                  (dlt:flush-command)
-                )
-                (setq newTable (dlt:get-new-table-ename-after entBefore))
-                (if newTable
-                  (progn
-                    (setq ok T)
-                    (setq dlt:*last-created-table-ename* newTable)
-                    (dlt:apply-table-format newTable)
-                  )
-                  (setq dlt:*last-create-failure-reason* "no_table_created")
-                )
-              )
-            )
-          )
+      (setq row 0)
+      (while (< row rows)
+        (setq col 0)
+        (while (< col cols)
+          (dlt:try-method obj 'SetCellGridLineWeight (list row col 15 dlt:*table-lineweight*))
+          (dlt:try-method obj 'SetCellGridLineWeight (list row col dlt:*table-grid-types-all* dlt:*table-lineweight*))
+          (setq col (1+ col))
         )
+        (setq row (1+ row))
       )
-
-      (if (and ok dlt:*remove-empty-rows-after-create*)
-        (progn
-          (if dlt:*last-created-table-ename*
-            (setq dlt:*last-removed-empty-rows*
-                  (dlt:remove-empty-rows-from-table dlt:*last-created-table-ename*))
-          )
-        )
-      )
-
-      (if (and (not ok) (null dlt:*last-create-failure-reason*))
-        (setq dlt:*last-create-failure-reason* "unknown")
-      )
-      ok
     )
+  )
+  T
+)
+
+(defun dlt:valid-table-ename-p (e)
+  (if (and e (entget e) (dlt:table-ename-p e))
+    T
+    nil
   )
 )
 
-(defun dlt:get-datalink-names-safe (/ res)
-  (setq res (vl-catch-all-apply 'dl:get-datalink-names '()))
-  (if (vl-catch-all-error-p res)
+(defun dlt:send-pending-format-command (/ doc cmd res)
+  (setq doc (dlt:get-active-document))
+  (if doc
     (progn
-      (if (findfile "datalink_auto.lsp")
-        (load "datalink_auto" nil)
-      )
-      (setq res (vl-catch-all-apply 'dl:get-datalink-names '()))
-      (if (vl-catch-all-error-p res)
-        'dlt_error
-        res
-      )
-    )
-    res
-  )
-)
-
-(defun dlt:create-selected-link-table (names / input pickedText linkName insPt)
-  (dlt:print-link-names names)
-  (setq pickedText (dlt:get-input-by-pick))
-  (if (/= (dlt:trim pickedText) "")
-    (progn
-      (setq input pickedText)
-      (prompt (strcat "\n已選取文字: " pickedText))
-    )
-    (setq input (getstring T "\n輸入要建立表格的 Data Link 名稱或序號: "))
-  )
-  (setq linkName (dlt:resolve-link-name input names))
-  (if (null linkName)
-    (prompt "\n找不到指定的 Data Link，已取消。")
-    (progn
-      (setq insPt (getpoint "\n指定表格插入點: "))
-      (if (null insPt)
-        (prompt "\n未指定插入點，已取消。")
-        (if (dlt:try-create-table-by-link linkName insPt)
-          (progn
-            (prompt (strcat "\n已建立表格: " linkName))
-            (if (> dlt:*last-removed-empty-rows* 0)
-              (prompt (strcat "\n已自動移除空白列: " (itoa dlt:*last-removed-empty-rows*)))
-            )
-          )
-          (progn
-            (prompt (strcat "\n建立表格失敗: " linkName))
-            (prompt (strcat "\n失敗原因: " dlt:*last-create-failure-reason*))
-            (if (= dlt:*last-create-failure-reason* "no_table_created")
-              (prompt "\n此版本可能不支援以命令列直接由 Data Link 建表，請用 TABLE 對話框手動選「From a data link」。")
-            )
-            (if (= dlt:*last-create-failure-reason* "command_s_unavailable")
-              (prompt "\n目前環境不支援 command-s，為避免卡住，已停止自動建表。")
-            )
-          )
+      (setq cmd
+        (strcat
+          "_.DELAY " (itoa dlt:*format-delay-ms*) "\n"
+          "DLTAPPLYPENDING\n"
         )
       )
+      (setq res (vl-catch-all-apply 'vla-SendCommand (list doc cmd)))
+      (if (vl-catch-all-error-p res) nil T)
     )
+    nil
   )
 )
 
-(defun dlt:ss->ename-list (ss / i out)
-  (setq out '())
+(defun dlt:queue-pending-format (mode tableEname source)
+  (setq dlt:*pending-format-mode* mode
+        dlt:*pending-table-ename* tableEname
+        dlt:*pending-format-source* source
+        dlt:*pending-format-remaining* dlt:*format-repeat-count*)
+  (dlt:send-pending-format-command)
+)
+
+(defun dlt:apply-grid-format (obj / clr rows cols)
+  (dlt:safe-call 'vla-put-Color (list obj dlt:*table-color-index*))
+  (dlt:safe-call 'vla-put-Linetype (list obj dlt:*table-linetype*))
+  (dlt:safe-call 'vla-put-Lineweight (list obj dlt:*table-lineweight*))
+
+  (setq rows (vla-get-Rows obj)
+        cols (vla-get-Columns obj))
+
+  (setq clr (dlt:safe-call 'vla-get-TrueColor (list obj)))
+  (if (and clr (not (vl-catch-all-error-p clr)) (= (type clr) 'VLA-OBJECT))
+    (dlt:safe-put clr 'ColorIndex dlt:*table-color-index*)
+    (setq clr nil)
+  )
+
+  (dlt:set-grid-format-on-target obj clr)
+  (dlt:apply-cell-grid-format obj clr rows cols)
+
+  (if (and clr (not (vl-catch-all-error-p clr)) (= (type clr) 'VLA-OBJECT))
+    (vl-catch-all-apply 'vlax-release-object (list clr))
+  )
+  T
+)
+
+(defun dlt:format-table-object (obj / rows cols r c styleName)
+  (setq rows (vla-get-Rows obj))
+  (setq cols (vla-get-Columns obj))
+
+  (dlt:clear-table-style-overrides obj)
+  (setq styleName (dlt:ensure-table-style-format obj))
+  (if styleName
+    (dlt:try-put obj 'StyleName styleName)
+  )
+
+  ;; 每列列高
+  (setq r 0)
+  (while (< r rows)
+    (dlt:safe-method obj 'SetRowHeight (list r dlt:*table-row-height*))
+    (setq r (1+ r))
+  )
+
+  ;; 每欄欄寬
+  (setq c 0)
+  (while (< c cols)
+    (dlt:safe-method obj 'SetColumnWidth (list c dlt:*table-col-width*))
+    (setq c (1+ c))
+  )
+
+  ;; 文字高度/對齊/文字型式：1=Title, 2=Header, 4=Data, 7=全部
+  (foreach r '(1 2 4 7)
+    (dlt:set-row-format-on-target obj r)
+  )
+  (dlt:apply-cell-text-format obj rows cols)
+
+  (dlt:apply-grid-format obj)
+  (dlt:safe-method obj 'GenerateLayout '())
+  (dlt:safe-method obj 'Update '())
+)
+
+(defun dlt:format-table-ename (e / obj)
+  (if (dlt:table-ename-p e)
+    (progn
+      (dlt:set-all-datalinks-data-only)
+      (setq obj (vlax-ename->vla-object e))
+      (dlt:format-table-object obj)
+      (vl-catch-all-apply 'vlax-release-object (list obj))
+      (princ "\n表格格式已自動調整完成。")
+    )
+    (princ "\n沒有找到可格式化的表格。")
+  )
+  (princ)
+)
+
+(defun dlt:format-all-tables-current-tab (/ ss i count e)
+  (setq ss (ssget "_X" (list '(0 . "ACAD_TABLE") (cons 410 (getvar "CTAB"))))
+        count 0)
   (if ss
     (progn
       (setq i 0)
       (while (< i (sslength ss))
-        (setq out (cons (ssname ss i) out))
+        (setq e (ssname ss i))
+        (if (dlt:table-ename-p e)
+          (progn
+            (dlt:format-table-ename e)
+            (setq count (1+ count))
+          )
+        )
         (setq i (1+ i))
       )
     )
   )
-  (reverse out)
+  count
 )
 
-(defun dlt:select-target-tables (/ flt ss)
-  (setq flt (list '(0 . "ACAD_TABLE") (cons 410 (getvar "CTAB"))))
-  (prompt "\n選取要重綁的表格 (Enter=目前頁籤全部 ACAD_TABLE): ")
-  (setq ss (ssget flt))
-  (if ss
-    ss
-    (ssget "_X" flt)
-  )
-)
-
-(defun dlt:print-batch-lines (title lines)
-  (if lines
+(defun dlt:on-datalinkupdate-ended (reactor params / cmd)
+  (setq cmd (strcase (car params)))
+  (if (wcmatch cmd "*DATALINKUPDATE*")
     (progn
-      (prompt title)
-      (foreach s lines
-        (prompt (strcat "\n" s))
+      (if (dlt:queue-pending-format 'all nil "DATALINKUPDATE")
+        (princ "\nDATALINKUPDATE 完成，已排程延後重套表格格式。")
+        (princ "\nDATALINKUPDATE 完成。若表格被資料連結覆蓋縮回，請執行 TBFIXALL。")
       )
     )
   )
+  (princ)
 )
 
-(defun dlt:pick-one-table-entity (/ ent en ed)
-  (setq ent (entsel "\n選取要重綁的舊表格 (Enter 結束): "))
-  (if (null ent)
-    nil
+(defun dlt:on-datalinkupdate-started (reactor params / cmd count)
+  (setq cmd (strcase (car params)))
+  (if (wcmatch cmd "*DATALINKUPDATE*")
     (progn
-      (setq en (car ent)
-            ed (if en (entget en)))
-      (if (and ed (= (cdr (assoc 0 ed)) "ACAD_TABLE"))
-        en
-        'dlt_retry
+      (setq count (dlt:set-all-datalinks-data-only))
+      (princ (strcat "\nDATALINKUPDATE 開始前，已將 Data Link 改為只更新資料。數量: " (itoa count)))
+    )
+  )
+  (princ)
+)
+
+(defun dlt:ensure-update-reactor ()
+  (if (or (null dlt:*update-reactor*) (not (vlr-added-p dlt:*update-reactor*)))
+    (setq dlt:*update-reactor*
+      (vlr-command-reactor
+        nil
+        '((:vlr-commandWillStart . dlt:on-datalinkupdate-started)
+          (:vlr-commandEnded . dlt:on-datalinkupdate-ended))
       )
     )
   )
+  T
 )
 
-(defun dlt:ask-link-name-for-manual-rebind (names / input pickedText linkName)
-  (setq pickedText (dlt:get-input-by-pick))
-  (if (/= (dlt:trim pickedText) "")
+(defun dlt:on-table-command-ended (reactor params / cmd newtab)
+  (setq cmd (strcase (car params)))
+  (if (wcmatch cmd "*TABLE*")
     (progn
-      (setq input pickedText)
-      (prompt (strcat "\n已選取文字: " pickedText))
+      (setq newtab (dlt:find-new-table-after dlt:*table-before-ent*))
+      (dlt:remove-reactor)
+      (setq dlt:*table-before-ent* nil)
+      (if newtab
+        (if (dlt:queue-pending-format 'one newtab "TABLE")
+          (princ "\nTABLE 已結束，已排程延後格式化新表格。")
+          (dlt:format-table-ename newtab)
+        )
+        (princ "\nTABLE 已結束，但沒有偵測到新表格。可改用 TBFIX 手動選表格格式化。")
+      )
     )
-    (setq input (getstring T "\n輸入對應 Data Link 名稱或序號: "))
   )
-  (setq linkName (dlt:resolve-link-name input names))
-  (if (null linkName)
+  (princ)
+)
+
+(defun c:DLTAPPLYPENDING (/ mode tableEname source remaining count)
+  (vl-load-com)
+  (setq mode dlt:*pending-format-mode*
+        tableEname dlt:*pending-table-ename*
+        source dlt:*pending-format-source*
+        remaining dlt:*pending-format-remaining*)
+  (cond
+    ((or (null mode) (<= remaining 0))
+     (princ "\n沒有待處理的表格格式化。")
+    )
+    (T
+     (cond
+       ((and (= mode 'one) (dlt:valid-table-ename-p tableEname))
+        (dlt:format-table-ename tableEname)
+        (princ (strcat "\n延後格式化完成。剩餘補格式次數: " (itoa (1- remaining))))
+       )
+       ((or (= mode 'all) (= source "DATALINKUPDATE") (= source "TABLE"))
+        (setq count (dlt:format-all-tables-current-tab))
+        (princ (strcat "\n延後重套表格格式完成。數量: " (itoa count) "，剩餘補格式次數: " (itoa (1- remaining))))
+       )
+       (T
+        (princ "\n沒有可格式化的表格。")
+       )
+     )
+     (setq dlt:*pending-format-remaining* (1- remaining))
+     (if (> dlt:*pending-format-remaining* 0)
+       (if (not (dlt:send-pending-format-command))
+         (setq dlt:*pending-format-remaining* 0)
+       )
+       (setq dlt:*pending-format-mode* nil
+             dlt:*pending-table-ename* nil
+             dlt:*pending-format-source* "")
+     )
+    )
+  )
+  (princ)
+)
+
+(defun dlt:on-table-command-cancelled (reactor params / cmd)
+  (setq cmd (strcase (car params)))
+  (if (wcmatch cmd "*TABLE*")
     (progn
-      (prompt "\n找不到對應 Data Link，該表格本次略過。")
+      (dlt:remove-reactor)
+      (setq dlt:*table-before-ent* nil)
+      (princ "\nTABLE 已取消，未調整格式。")
+    )
+  )
+  (princ)
+)
+
+(defun dlt:prepare-table-reactor ()
+  (vl-load-com)
+  (dlt:remove-reactor)
+  (setq dlt:*table-before-ent* (entlast))
+  (setq dlt:*table-reactor*
+    (vlr-command-reactor
       nil
+      '((:vlr-commandEnded . dlt:on-table-command-ended)
+        (:vlr-commandCancelled . dlt:on-table-command-cancelled)
+        (:vlr-commandFailed . dlt:on-table-command-cancelled))
     )
-    linkName
   )
 )
 
-(defun dlt:batch-rebind-existing-tables (names / ss enames total done okCount failCount skipCount
-                                                en h linkName reason linkedRaw sourceTag
-                                                nearCand nearTxt textCandidates
-                                                okLines failLines skipLines)
-  (setq ss (dlt:select-target-tables))
-  (if (null ss)
-    (prompt "\n目前頁籤找不到可重綁的表格。")
+(defun c:DLTABLEUI (/)
+  (if (> (getvar "CMDACTIVE") 0)
+    (princ "\n目前有指令正在執行，請先 Esc 結束後再執行 DLTABLEUI。")
     (progn
-      (if dlt:*enable-near-text-fallback*
-        (progn
-          (setq textCandidates (dlt:collect-link-text-candidates names))
-          (prompt (strcat "\n目前頁籤可用盤名字文字候選: " (itoa (length textCandidates))))
-        )
-        (progn
-          (setq textCandidates '())
-          (prompt "\n目前已關閉鄰近文字比對（僅用舊表 Data Link 與表格內容）。")
-        )
-      )
-
-      (setq enames    (dlt:ss->ename-list ss)
-            total     (length enames)
-            done      0
-            okCount   0
-            failCount 0
-            skipCount 0
-            okLines   '()
-            failLines '()
-            skipLines '())
-
-      (foreach en enames
-        (setq done (1+ done)
-              h    (dlt:get-table-handle en))
-        (prompt (strcat "\n處理中 " (itoa done) "/" (itoa total) "，Handle: " h))
-
-        (setq linkName nil
-              reason   ""
-              sourceTag ""
-              linkedRaw (dlt:get-linked-datalink-name-from-table en))
-        (if (/= (dlt:trim linkedRaw) "")
-          (progn
-            (setq linkName (dlt:resolve-link-by-text linkedRaw names))
-            (if linkName
-              (setq sourceTag (strcat "[來源:舊表 Data Link=" linkedRaw "]"))
-              (setq reason (strcat "舊表 Data Link: " linkedRaw "，目前 DWG 找不到同名"))
-            )
-          )
-        )
-
-        (if (null linkName)
-          (progn
-            ; 回退 1：舊表若查不到 Data Link，再嘗試用表格內容推斷
-            (setq linkName (dlt:guess-link-name-from-table en names))
-            (if linkName
-              (setq sourceTag "[來源:表格內容推斷]")
-            )
-          )
-        )
-
-        (if (and (null linkName) dlt:*enable-near-text-fallback*)
-          (progn
-            ; 回退 2：用表格附近文字推斷
-            (setq nearCand (dlt:best-near-text-candidate-for-table en textCandidates))
-            (if nearCand
-              (progn
-                (setq linkName (car nearCand)
-                      nearTxt  (dlt:short-text (caddr nearCand) 40)
-                      sourceTag (strcat "[來源:附近文字=" nearTxt "]"))
-              )
-              (if (/= (dlt:trim linkedRaw) "")
-                (setq reason (strcat "舊表 Data Link: " linkedRaw "，目前 DWG 找不到同名"))
-              )
-            )
-          )
-        )
-
-        (if (and (null linkName) (= reason ""))
-          (if dlt:*enable-near-text-fallback*
-            (setq reason "表格未綁 Data Link，表格內容與附近文字皆無法對應現有 Data Link")
-            (setq reason "表格未綁 Data Link，且表格內容無法對應現有 Data Link（鄰近文字比對關閉）")
-          )
-        )
-
-        (if (and (null linkName) (/= (dlt:trim linkedRaw) "") (= reason ""))
-          (setq reason (strcat "舊表 Data Link: " linkedRaw "，目前 DWG 找不到同名"))
-        )
-
-        (if (and (null linkName) (= (dlt:trim linkedRaw) "") (= reason ""))
-          (setq reason "表格未綁 Data Link")
-        )
-
-        (if (null linkName)
-          (progn
-            (setq skipCount (1+ skipCount))
-            (setq skipLines (cons (strcat h "  (" reason ")") skipLines))
-          )
-          (if (dlt:rebuild-table-by-link en linkName)
-            (progn
-              (setq okCount (1+ okCount))
-              (setq okLines (cons (strcat h " -> " linkName "  " sourceTag) okLines))
-            )
-            (progn
-              (setq failCount (1+ failCount)
-                    reason (if dlt:*last-create-failure-reason*
-                             dlt:*last-create-failure-reason*
-                             "unknown"))
-              (setq failLines (cons (strcat h " -> " linkName "  (" reason ")") failLines))
-            )
-          )
-        )
-      )
-
-      (prompt "\n--- 批次重綁完成 ---")
-      (prompt (strcat "\n總表格數: " (itoa total)
-                      "，成功: " (itoa okCount)
-                      "，失敗: " (itoa failCount)
-                      "，略過: " (itoa skipCount)))
-      (dlt:print-batch-lines "\n--- 成功清單 ---" (reverse okLines))
-      (dlt:print-batch-lines "\n--- 失敗清單 ---" (reverse failLines))
-      (dlt:print-batch-lines "\n--- 略過清單 ---" (reverse skipLines))
-      (if (> failCount 0)
-        (prompt "\n若失敗原因為 no_table_created，請確認此版本是否支援命令列 -TABLE 由 Data Link 建表。")
-      )
-    )
-  )
-)
-
-(defun c:DLTABLEREBINDMANUAL (/ names tableEn linkName handle reason
-                                done okCount failCount skipCount
-                                okLines failLines skipLines)
-  (vl-load-com)
-  (setvar "cmdecho" 0)
-  (dlt:init-command-s-flag)
-
-  (setq names (dlt:get-datalink-names-safe))
-  (if (eq names 'dlt_error)
-    (prompt "\n找不到 datalink_auto.lsp 或 dl:get-datalink-names，請先載入 datalink_auto.lsp。")
-    (if (null names)
-      (prompt "\n目前找不到任何 Data Link。")
-      (progn
-        (if (not dlt:*has-command-s*)
-          (prompt "\n此 AutoCAD/LISP 環境不支援 command-s，為避免 TABLE 指令卡住，已停用 DLTABLEREBINDMANUAL。")
-          (progn
-            (dlt:print-link-names names)
-            (prompt "\n開始手動重綁：每次先選舊表，再選盤名文字（或手動輸入名稱/序號）。")
-            (setq done      nil
-                  okCount   0
-                  failCount 0
-                  skipCount 0
-                  okLines   '()
-                  failLines '()
-                  skipLines '())
-
-            (while (not done)
-              (setq tableEn (dlt:pick-one-table-entity))
-              (cond
-                ((null tableEn)
-                 (setq done T)
-                )
-                ((eq tableEn 'dlt_retry)
-                 (prompt "\n所選物件不是表格，請重選。")
-                )
-                (T
-                 (setq handle   (dlt:get-table-handle tableEn)
-                       linkName (dlt:ask-link-name-for-manual-rebind names))
-                 (if (null linkName)
-                   (progn
-                     (setq skipCount (1+ skipCount))
-                     (setq skipLines (cons (strcat handle "  (找不到指定 Data Link)") skipLines))
-                   )
-                   (if (dlt:rebuild-table-by-link tableEn linkName)
-                     (progn
-                       (setq okCount (1+ okCount))
-                       (setq okLines (cons (strcat handle " -> " linkName) okLines))
-                     )
-                     (progn
-                       (setq failCount (1+ failCount)
-                             reason (if dlt:*last-create-failure-reason*
-                                      dlt:*last-create-failure-reason*
-                                      "unknown"))
-                       (setq failLines (cons (strcat handle " -> " linkName "  (" reason ")") failLines))
-                     )
-                   )
-                 )
-                )
-              )
-            )
-
-            (prompt "\n--- 手動重綁完成 ---")
-            (prompt (strcat "\n成功: " (itoa okCount)
-                            "，失敗: " (itoa failCount)
-                            "，略過: " (itoa skipCount)))
-            (dlt:print-batch-lines "\n--- 成功清單 ---" (reverse okLines))
-            (dlt:print-batch-lines "\n--- 失敗清單 ---" (reverse failLines))
-            (dlt:print-batch-lines "\n--- 略過清單 ---" (reverse skipLines))
-          )
-        )
-      )
+      (princ (strcat "\n已先將 Data Link 改為只更新資料。數量: " (itoa (dlt:set-all-datalinks-data-only))))
+      (dlt:prepare-table-reactor)
+      (princ "\n請在 TABLE 視窗中選 From a data link / 從資料連結，選 Data Link 後指定插入點。完成後會自動格式化。")
+      (initdia)
+      (command "_.TABLE")
     )
   )
   (princ)
 )
 
-(defun c:DLTABLEAUTO (/ names)
-  (vl-load-com)
-  (setvar "cmdecho" 0)
-  (dlt:init-command-s-flag)
-
-  (setq names (dlt:get-datalink-names-safe))
-  (if (eq names 'dlt_error)
-    (prompt "\n找不到 datalink_auto.lsp 或 dl:get-datalink-names，請先載入 datalink_auto.lsp。")
-    (if (null names)
-      (prompt "\n目前找不到任何 Data Link。")
-      (progn
-        (if (not dlt:*has-command-s*)
-          (prompt "\n此 AutoCAD/LISP 環境不支援 command-s，為避免 TABLE 指令卡住，已停用 DLTABLEAUTO。")
-          (dlt:create-selected-link-table names)
-        )
-      )
-    )
-  )
-  (princ)
+(defun c:DLTABLEDIALOG ()
+  (c:DLTABLEUI)
 )
 
-(defun c:DLTABLEREBIND (/ names)
-  (vl-load-com)
-  (setvar "cmdecho" 0)
-  (dlt:init-command-s-flag)
-
-  (setq names (dlt:get-datalink-names-safe))
-  (if (eq names 'dlt_error)
-    (prompt "\n找不到 datalink_auto.lsp 或 dl:get-datalink-names，請先載入 datalink_auto.lsp。")
-    (if (null names)
-      (prompt "\n目前找不到任何 Data Link。")
-      (progn
-        (if (not dlt:*has-command-s*)
-          (prompt "\n此 AutoCAD/LISP 環境不支援 command-s，為避免 TABLE 指令卡住，已停用 DLTABLEREBIND。")
-          (dlt:batch-rebind-existing-tables names)
-        )
-      )
-    )
-  )
-  (princ)
-)
-
-(defun c:DLTABLEREBINDBATCH ()
-  (c:DLTABLEREBIND)
-)
-
-(defun c:DLTABLEREBINDPICK ()
-  (c:DLTABLEREBINDMANUAL)
+(defun c:DLTABLEAUTO ()
+  (c:DLTABLEUI)
 )
 
 (defun c:AUTODATALINKTABLE ()
-  (c:DLTABLEAUTO)
+  (c:DLTABLEUI)
 )
 
 (defun c:DLLINKTABLE ()
-  (c:DLTABLEAUTO)
+  (c:DLTABLEUI)
 )
 
-(defun c:AUTODATALINKTABLEREBIND ()
-  (c:DLTABLEREBIND)
+(defun c:TBFIX (/ ent)
+  (vl-load-com)
+  (setq ent (car (entsel "\n選取要調整格式的表格: ")))
+  (if ent
+    (dlt:format-table-ename ent)
+    (princ "\n未選取表格。")
+  )
+  (princ)
 )
 
-(defun c:DLLINKTABLEREBIND ()
-  (c:DLTABLEREBIND)
+(defun c:TBFIXALL (/ count)
+  (vl-load-com)
+  (setq count (dlt:format-all-tables-current-tab))
+  (princ (strcat "\n已重套目前頁籤表格格式。數量: " (itoa count)))
+  (princ)
 )
 
-(defun c:AUTODATALINKTABLEREBINDPICK ()
-  (c:DLTABLEREBINDMANUAL)
+(defun c:DLDATAONLY (/ count)
+  (vl-load-com)
+  (setq count (dlt:set-all-datalinks-data-only))
+  (princ (strcat "\n已將 Data Link 改為只更新資料、跳過 Excel 格式。數量: " (itoa count)))
+  (princ)
 )
 
-(defun c:DLLINKTABLEREBINDPICK ()
-  (c:DLTABLEREBINDMANUAL)
-)
+(dlt:ensure-update-reactor)
 
-(princ "\nDLTABLEAUTO / AUTODATALINKTABLE / DLLINKTABLE / DLTABLEREBIND / DLTABLEREBINDBATCH / AUTODATALINKTABLEREBIND / DLLINKTABLEREBIND / DLTABLEREBINDMANUAL / DLTABLEREBINDPICK / AUTODATALINKTABLEREBINDPICK / DLLINKTABLEREBINDPICK 載入完成。")
+(princ "\n已載入：DLTABLEUI/DLTABLEAUTO/DLTABLEDIALOG = 開啟 TABLE 視窗建 Data Link 表格後延後格式化；TBFIX/TBFIXALL = 重套表格格式；DLDATAONLY = Data Link 只更新資料。")
 (princ)
