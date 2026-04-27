@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="MyTool workstation auto connect icon">
+  <defs>
+    <linearGradient id="bg" x1="32" y1="16" x2="224" y2="240" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#253241"/>
+      <stop offset="1" stop-color="#101820"/>
+    </linearGradient>
+    <linearGradient id="line" x1="62" y1="130" x2="194" y2="130" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1ed4ff"/>
+      <stop offset="1" stop-color="#49e889"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="16" y="16" width="224" height="224" rx="28" fill="url(#bg)"/>
+
+  <path d="M64 38v180M116 38v180M168 38v180M220 38v180M38 64h180M38 116h180M38 168h180M38 220h180"
+        fill="none" stroke="#5d7187" stroke-width="5" stroke-linecap="round" opacity=".26"/>
+
+  <path d="M68 128h120" fill="none" stroke="#0d1117" stroke-width="24" stroke-linecap="round" opacity=".44"/>
+  <path d="M68 128h120" fill="none" stroke="url(#line)" stroke-width="14" stroke-linecap="round"/>
+  <path d="M128 86v84" fill="none" stroke="#ffcf5a" stroke-width="10" stroke-linecap="round"/>
+
+  <rect x="42" y="86" width="58" height="84" rx="8" fill="#e8f3ff" stroke="#0d1117" stroke-width="8"/>
+  <rect x="156" y="86" width="58" height="84" rx="8" fill="#e8f3ff" stroke="#0d1117" stroke-width="8"/>
+
+  <circle cx="71" cy="128" r="12" fill="#1ed4ff" stroke="#0d1117" stroke-width="6"/>
+  <circle cx="185" cy="128" r="12" fill="#49e889" stroke="#0d1117" stroke-width="6"/>
+  <circle cx="128" cy="128" r="11" fill="#ffcf5a" stroke="#0d1117" stroke-width="6"/>
+
+  <path d="M52 200h152" fill="none" stroke="#e8f3ff" stroke-width="10" stroke-linecap="round"/>
+  <path d="M82 200h92" fill="none" stroke="#ffcf5a" stroke-width="10" stroke-linecap="round"/>
+</svg>

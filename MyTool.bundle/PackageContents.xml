@@ -4,6 +4,7 @@
   AutodeskProduct="AutoCAD"
   Name="MyTool"
   Description="MyTool AutoCAD LISP Commands"
+  Icon="./Contents/Resources/mytool_icon.bmp"
   AppVersion="1.0.0"
   ProductCode="{12A5F7A4-3E67-46F9-9D91-59BB713C7244}"
   UpgradeCode="{A63EF95D-8BAF-4C90-B233-8C10B6A1D15B}">
