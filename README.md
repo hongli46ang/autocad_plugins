@@ -2,7 +2,7 @@
    ```shell
    New-Item -ItemType SymbolicLink -Path "$env:AppData\Autodesk\ApplicationPlugins\MyTool.bundle" -Target "C:\Users\user\路徑\autocad_plugins\MyTool.bundle"
    ```
-   放到 `ApplicationPlugins` 後，開啟 AutoCAD 會自動載入小工具。
+   放到 `ApplicationPlugins` 後，開啟 AutoCAD 會自動載入小工具，並載入/開啟 `MyToolbar` 工具列。
 
 - auto_fillet_90 :
     1. PL90F 可框選/多選後做圓角（僅接受 LWPOLYLINE / POLYLINE）

@@ -11,7 +11,20 @@
   <CompanyDetails Name="MyTool" Url="" />
 
   <Components Description="LISP command modules">
-    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" />
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SupportPath="./Contents/Resources" />
+
+    <ComponentEntry
+      AppName="MyToolbar"
+      ModuleName="./Contents/Resources/MyToolbar.cuix"
+      AppDescription="MyTool custom toolbar"
+      LoadOnAutoCADStartup="True" />
+
+    <ComponentEntry
+      AppName="mytool_startup.lsp"
+      AppType="Lisp"
+      ModuleName="./Contents/mytool_startup.lsp"
+      AppDescription="Load and show MyToolbar on startup"
+      LoadOnAutoCADStartup="True" />
 
     <ComponentEntry
       AppName="add.lsp"
