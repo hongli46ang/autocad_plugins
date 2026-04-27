@@ -4,6 +4,10 @@
 (setq wsc:*sort-axis* '(1.0 0.0 0.0))
 (setq wsc:*sample-pline-layer* "電氣管線")
 (setq wsc:*axis-align-tol* 1e-6)
+(setq wsc:*axis-angle-tol-deg* 5.0)
+(setq wsc:*axis-angle-tan* 0.0874886635)
+(setq wsc:*max-connect-distance* 2000.0)
+(setq wsc:*last-skip-reason* nil)
 
 (defun wsc:trim (s)
   (if s
@@ -32,8 +36,18 @@
   (setq dx (abs (- (car p1) (car p2)))
         dy (abs (- (cadr p1) (cadr p2))))
   (cond
-    ((<= dx wsc:*axis-align-tol*) 'vertical)
-    ((<= dy wsc:*axis-align-tol*) 'horizontal)
+    ((and (<= dx wsc:*axis-align-tol*) (<= dy wsc:*axis-align-tol*)) nil)
+    ((<= dx (max wsc:*axis-align-tol* (* dy wsc:*axis-angle-tan*))) 'vertical)
+    ((<= dy (max wsc:*axis-align-tol* (* dx wsc:*axis-angle-tan*))) 'horizontal)
+    (T nil)
+  )
+)
+
+(defun wsc:axis-from-points (p1 p2 / kind)
+  (setq kind (wsc:axis-aligned-kind p1 p2))
+  (cond
+    ((= kind 'horizontal) '(1.0 0.0 0.0))
+    ((= kind 'vertical) '(0.0 1.0 0.0))
     (T nil)
   )
 )
@@ -401,8 +415,7 @@
   )
 )
 
-(defun wsc:get-bbox (ename / obj ret minPt maxPt)
-  (setq obj (vlax-ename->vla-object ename))
+(defun wsc:get-vla-bbox (obj / ret minPt maxPt)
   (if obj
     (progn
       (setq ret (vl-catch-all-apply 'vla-GetBoundingBox (list obj 'minPt 'maxPt)))
@@ -416,6 +429,11 @@
     )
     nil
   )
+)
+
+(defun wsc:get-bbox (ename / obj)
+  (setq obj (vlax-ename->vla-object ename))
+  (wsc:get-vla-bbox obj)
 )
 
 (defun wsc:center-from-bbox (bbox / mn mx)
@@ -585,6 +603,18 @@
   )
 )
 
+(defun wsc:default-connection-style ()
+  (if (wsc:ensure-layer wsc:*sample-pline-layer*)
+    (list
+      (cons 8 wsc:*sample-pline-layer*)
+      (cons 6 "ByLayer")
+      (cons 62 256)
+      (cons 370 -1)
+    )
+    nil
+  )
+)
+
 (defun wsc:find-new-polyline (before / e typ out)
   (setq e (if before (entnext before) (entnext))
         out nil)
@@ -647,6 +677,56 @@
   )
 )
 
+(defun wsc:build-sample-config (dir base nodes usePline / perp tol style)
+  (if (null dir)
+    nil
+    (progn
+      (if (<= base wsc:*eps*)
+        (setq base (wsc:avg-node-size nodes))
+      )
+      (if (<= base wsc:*eps*)
+        (setq base 100.0)
+      )
+      (setq perp (list (- (cadr dir)) (car dir) 0.0)
+            tol  (* base 0.75))
+      (prompt (strcat "\n分列/分欄容差: " (rtos tol 2 2)))
+      (prompt
+        (strcat
+          "\n連線限制: 距離 <= "
+          (rtos wsc:*max-connect-distance* 2 2)
+          "；角度 <= "
+          (rtos wsc:*axis-angle-tol-deg* 2 2)
+          " 度。"
+        )
+      )
+      (if usePline
+        (setq style (wsc:get-connection-style))
+        (progn
+          (setq style (wsc:default-connection-style))
+          (if style
+            (prompt (strcat "\n範圍版連線樣式: 使用圖層「" wsc:*sample-pline-layer* "」ByLayer。"))
+            (prompt (strcat "\n無法建立圖層「" wsc:*sample-pline-layer* "」，已取消。"))
+          )
+        )
+      )
+      (if style
+        (list dir perp tol style)
+        nil
+      )
+    )
+  )
+)
+
+(defun wsc:sample-direction-error ()
+  (prompt
+    (strcat
+      "\n範例方向需接近水平或垂直 "
+      (rtos wsc:*axis-angle-tol-deg* 2 2)
+      " 度內，請重試。"
+    )
+  )
+)
+
 (defun wsc:get-sample-config (stations nodes / s1 s2 n1 n2 dir perp size1 size2 base tol style)
   (prompt "\n4/5 設定連線範例：先框選 2 個工作站決定方向，再用 PLINE 畫範例線。")
   (setq s1 (wsc:pick-station-from-list "\n4/5 框選/多選範例起點工作站: " stations))
@@ -669,38 +749,17 @@
               nil
             )
             (progn
-              (setq dir
-                    (wsc:normalize2d
-                      (list
-                        (- (car (cadr n2)) (car (cadr n1)))
-                        (- (cadr (cadr n2)) (cadr (cadr n1)))
-                        0.0
-                      )
-                    )
-              )
+              (setq dir (wsc:axis-from-points (cadr n1) (cadr n2)))
               (if (null dir)
                 (progn
-                  (prompt "\n範例方向過短，請重試。")
+                  (wsc:sample-direction-error)
                   nil
                 )
                 (progn
-                  (setq perp  (list (- (cadr dir)) (car dir) 0.0)
-                        size1 (nth 3 n1)
+                  (setq size1 (nth 3 n1)
                         size2 (nth 3 n2)
                         base  (/ (+ size1 size2) 2.0))
-                  (if (<= base wsc:*eps*)
-                    (setq base (wsc:avg-node-size nodes))
-                  )
-                  (if (<= base wsc:*eps*)
-                    (setq base 100.0)
-                  )
-                  (setq tol (* base 0.75))
-                  (prompt (strcat "\n分列/分欄容差: " (rtos tol 2 2)))
-                  (setq style (wsc:get-connection-style))
-                  (if style
-                    (list dir perp tol style)
-                    nil
-                  )
+                  (wsc:build-sample-config dir base nodes T)
                 )
               )
             )
@@ -709,6 +768,44 @@
       )
     )
     nil
+  )
+)
+
+(defun wsc:get-range-axis-choice (/ ans)
+  (initget "H V")
+  (setq ans (getkword "\n4/5 選擇連線方向 [H=水平/V=垂直] <水平>: "))
+  (cond
+    ((or (null ans) (= ans "H"))
+      '(1.0 0.0 0.0)
+    )
+    ((= ans "V")
+      '(0.0 1.0 0.0)
+    )
+    (T nil)
+  )
+)
+
+(defun wsc:get-sample-config-by-range (nodes / dir base)
+  (prompt "\n4/5 設定連線方向：使用第 2 步框選範圍，選擇線段要水平或垂直。")
+  (setq dir (wsc:get-range-axis-choice))
+  (if (null dir)
+    nil
+    (progn
+      (setq base (wsc:avg-node-size nodes))
+      (wsc:build-sample-config dir base nodes nil)
+    )
+  )
+)
+
+(defun wsc:horizontal-axis-p (axis)
+  (>= (abs (car axis)) (abs (cadr axis)))
+)
+
+(defun wsc:node-quarter-points-by-axis (node axis / q)
+  (setq q (caddr node))
+  (if (wsc:horizontal-axis-p axis)
+    (list (nth 1 q) (nth 3 q))
+    (list (nth 0 q) (nth 2 q))
   )
 )
 
@@ -764,25 +861,40 @@
   groups
 )
 
-(defun wsc:best-quarter-pair (nodeA nodeB / qa qb pa pb best bestD d kind norm)
-  (setq qa    (caddr nodeA)
-        qb    (caddr nodeB)
+(defun wsc:best-quarter-pair (nodeA nodeB dirAxis / qa qb pa pb best bestD d kind maxD2 sawAngleReject sawDistanceReject)
+  (setq qa    (wsc:node-quarter-points-by-axis nodeA dirAxis)
+        qb    (wsc:node-quarter-points-by-axis nodeB dirAxis)
         best  nil
-        bestD nil)
+        bestD nil
+        maxD2 (* wsc:*max-connect-distance* wsc:*max-connect-distance*)
+        sawAngleReject nil
+        sawDistanceReject nil
+        wsc:*last-skip-reason* nil)
   (foreach pa qa
     (foreach pb qb
       (setq kind (wsc:axis-aligned-kind pa pb))
       (if kind
         (progn
-          (setq norm (wsc:normalize-axis-pair pa pb kind)
-                d    (wsc:dist2 (car norm) (cadr norm)))
-          (if (or (null bestD) (< d bestD))
-            (setq bestD d
-                  best  norm)
+          (setq d (wsc:dist2 pa pb))
+          (if (<= d maxD2)
+            (if (or (null bestD) (< d bestD))
+              (setq bestD d
+                    best  (list pa pb))
+            )
+            (setq sawDistanceReject T)
           )
         )
+        (setq sawAngleReject T)
       )
     )
+  )
+  (if (null best)
+    (setq wsc:*last-skip-reason*
+          (cond
+            (sawDistanceReject 'distance)
+            (sawAngleReject 'angle)
+            (T 'other)
+          ))
   )
   best
 )
@@ -799,41 +911,61 @@
   (entmakex data)
 )
 
-(defun wsc:connect-order (order style / i total nodeA nodeB pair created skipped)
+(defun wsc:connect-order (order style dirAxis / i total nodeA nodeB pair created skippedAngle skippedDistance skippedOther)
   (setq i 0
         total (length order)
         created 0
-        skipped 0)
+        skippedAngle 0
+        skippedDistance 0
+        skippedOther 0)
   (while (< i (1- total))
     (setq nodeA (nth i order)
           nodeB (nth (1+ i) order)
-          pair  (wsc:best-quarter-pair nodeA nodeB))
+          pair  (wsc:best-quarter-pair nodeA nodeB dirAxis))
     (if (and pair (wsc:make-line-with-style (car pair) (cadr pair) style))
       (setq created (1+ created))
-      (setq skipped (1+ skipped))
+      (cond
+        ((= wsc:*last-skip-reason* 'distance)
+          (setq skippedDistance (1+ skippedDistance)))
+        ((= wsc:*last-skip-reason* 'angle)
+          (setq skippedAngle (1+ skippedAngle)))
+        (T
+          (setq skippedOther (1+ skippedOther)))
+      )
     )
     (setq i (1+ i))
   )
-  (list created skipped)
+  (list created skippedAngle skippedDistance skippedOther)
 )
 
-(defun wsc:connect-groups-by-direction (groups dirAxis style / created skipped row sorted rowResult)
+(defun wsc:connect-groups-by-direction (groups dirAxis style / created skippedAngle skippedDistance skippedOther row sorted rowResult)
   (setq created 0
-        skipped 0)
+        skippedAngle 0
+        skippedDistance 0
+        skippedOther 0)
   (foreach row groups
     (setq sorted (wsc:sort-nodes-by-axis row dirAxis))
     (if (> (length sorted) 1)
       (progn
-        (setq rowResult (wsc:connect-order sorted style))
+        (setq rowResult (wsc:connect-order sorted style dirAxis))
         (setq created (+ created (car rowResult))
-              skipped (+ skipped (cadr rowResult)))
+              skippedAngle (+ skippedAngle (cadr rowResult))
+              skippedDistance (+ skippedDistance (caddr rowResult))
+              skippedOther (+ skippedOther (cadddr rowResult)))
       )
     )
   )
-  (list created skipped)
+  (list created skippedAngle skippedDistance skippedOther)
 )
 
-(defun c:WSAUTOCONNECT (/ oldErr oldEcho legendInfo legend legendText spec areaSS stations nodes cfg dir perp tol style groups connectResult created skipped)
+(defun wsc:get-config-by-mode (sampleMode stations nodes)
+  (if (= sampleMode 'range)
+    (wsc:get-sample-config-by-range nodes)
+    (wsc:get-sample-config stations nodes)
+  )
+)
+
+(defun wsc:run-auto-connect (sampleMode commandName / oldErr oldEcho legendInfo legend legendText spec areaSS stations nodes cfg dir perp tol style groups connectResult created skippedAngle skippedDistance skippedOther)
   (vl-load-com)
   (setq oldErr  *error*
         oldEcho (getvar "CMDECHO"))
@@ -847,7 +979,7 @@
     (cond
       ((or (= msg "Function cancelled")
            (= msg "quit / exit abort"))
-        (prompt "\nWSAUTOCONNECT 已取消。")
+        (prompt (strcat "\n" commandName " 已取消。"))
       )
       ((and msg (/= msg ""))
         (prompt (strcat "\n錯誤: " msg))
@@ -857,7 +989,7 @@
   )
 
   (setvar "CMDECHO" 0)
-  (prompt "\n=== 工作站自動連線 ===")
+  (prompt (strcat "\n=== " commandName " 工作站自動連線 ==="))
 
   (setq legendInfo (wsc:get-legend-selection))
   (if (null legendInfo)
@@ -881,7 +1013,7 @@
               (if (< (length nodes) 2)
                 (prompt "\n可用工作站節點不足 2 個，已取消。")
                 (progn
-                  (setq cfg (wsc:get-sample-config stations nodes))
+                  (setq cfg (wsc:get-config-by-mode sampleMode stations nodes))
                   (if (null cfg)
                     (prompt "\n未完成連線範例設定，已取消。")
                     (progn
@@ -891,16 +1023,22 @@
                             style (nth 3 cfg)
                             groups (wsc:group-by-perp-axis nodes perp tol))
 
-                      (prompt "\n5/5 開始自動連線（僅水平/垂直，全部由四分點起訖）...")
+                      (prompt "\n5/5 開始自動連線（水平/垂直 5 度內，距離 1.5m 內，全部由四分點起訖）...")
                       (setq connectResult (wsc:connect-groups-by-direction groups dir style)
                             created       (car connectResult)
-                            skipped       (cadr connectResult))
+                            skippedAngle  (cadr connectResult)
+                            skippedDistance (caddr connectResult)
+                            skippedOther  (cadddr connectResult))
                       (prompt
                         (strcat
                           "\n完成連線，共建立 "
                           (itoa created)
-                          " 條線段；略過斜線 "
-                          (itoa skipped)
+                          " 條線段；略過角度不符 "
+                          (itoa skippedAngle)
+                          " 條；略過超距離 "
+                          (itoa skippedDistance)
+                          " 條；其他略過 "
+                          (itoa skippedOther)
                           " 條；分組數量: "
                           (itoa (length groups))
                           "。"
@@ -925,13 +1063,15 @@
   (princ)
 )
 
-(defun c:AUTOWSCONNECT ()
-  (c:WSAUTOCONNECT)
+(setq c:WSAUTOCONNECT nil
+      c:AUTOWSCONNECT nil
+      c:WORKSTATIONAUTOCONNECT nil
+      c:WSAUTOCONNECTRANGE nil
+      c:WORKSTATIONAUTOCONNECTRANGE nil)
+
+(defun c:AUTOWSCONNECTRANGE ()
+  (wsc:run-auto-connect 'range "AUTOWSCONNECTRANGE")
 )
 
-(defun c:WORKSTATIONAUTOCONNECT ()
-  (c:WSAUTOCONNECT)
-)
-
-(prompt "\nWSAUTOCONNECT / AUTOWSCONNECT / WORKSTATIONAUTOCONNECT 載入完成。")
+(prompt "\nAUTOWSCONNECTRANGE 載入完成。")
 (princ)

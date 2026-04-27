@@ -48,5 +48,17 @@
         <Command Local="AUTODATALINKSHEETS" Global="AUTODATALINKSHEETS" />
       </Commands>
     </ComponentEntry>
+
+    <ComponentEntry
+      AppName="workstation_auto_connect.lsp"
+      AppType="Lisp"
+      ModuleName="./Contents/workstation_auto_connect.lsp"
+      AppDescription="Workstation auto connection commands"
+      LoadOnAutoCADStartup="False"
+      LoadOnCommandInvocation="True">
+      <Commands GroupName="WORKSTATION_AUTO_CONNECT">
+        <Command Local="AUTOWSCONNECTRANGE" Global="AUTOWSCONNECTRANGE" />
+      </Commands>
+    </ComponentEntry>
   </Components>
 </ApplicationPackage>
