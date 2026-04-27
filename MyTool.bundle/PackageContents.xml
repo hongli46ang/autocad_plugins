@@ -18,7 +18,7 @@
       AppType="Lisp"
       ModuleName="./Contents/add.lsp"
       AppDescription="ADDNUM command"
-      LoadOnAutoCADStartup="False"
+      LoadOnAutoCADStartup="True"
       LoadOnCommandInvocation="True">
       <Commands GroupName="ADDNUM">
         <Command Local="ADDNUM" Global="ADDNUM" />
@@ -30,7 +30,7 @@
       AppType="Lisp"
       ModuleName="./Contents/auto_fillet_90.lsp"
       AppDescription="PL90F/PL90FA commands"
-      LoadOnAutoCADStartup="False"
+      LoadOnAutoCADStartup="True"
       LoadOnCommandInvocation="True">
       <Commands GroupName="AUTO_FILLET_90">
         <Command Local="PL90F" Global="PL90F" />
@@ -43,7 +43,7 @@
       AppType="Lisp"
       ModuleName="./Contents/datalink_auto.lsp"
       AppDescription="Create Data Links for all Excel sheets"
-      LoadOnAutoCADStartup="False"
+      LoadOnAutoCADStartup="True"
       LoadOnCommandInvocation="True">
       <Commands GroupName="DATALINK_AUTO">
         <Command Local="AUTODATALINKSHEETS" Global="AUTODATALINKSHEETS" />
@@ -55,7 +55,7 @@
       AppType="Lisp"
       ModuleName="./Contents/workstation_auto_connect.lsp"
       AppDescription="Workstation auto connection commands"
-      LoadOnAutoCADStartup="False"
+      LoadOnAutoCADStartup="True"
       LoadOnCommandInvocation="True">
       <Commands GroupName="WORKSTATION_AUTO_CONNECT">
         <Command Local="AUTOWSCONNECTRANGE" Global="AUTOWSCONNECTRANGE" />
