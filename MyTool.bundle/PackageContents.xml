@@ -74,5 +74,20 @@
         <Command Local="AUTOWSCONNECTRANGE" Global="AUTOWSCONNECTRANGE" />
       </Commands>
     </ComponentEntry>
+
+    <ComponentEntry
+      AppName="connected_symbol_groups.lsp"
+      AppType="Lisp"
+      ModuleName="./Contents/connected_symbol_groups.lsp"
+      AppDescription="Find connected symbols and label groups"
+      LoadOnAutoCADStartup="True"
+      LoadOnCommandInvocation="True">
+      <Commands GroupName="CONNECTED_SYMBOL_GROUPS">
+        <Command Local="AUTOCONNECTGROUPS" Global="AUTOCONNECTGROUPS" />
+        <Command Local="AUTOCG" Global="AUTOCG" />
+        <Command Local="AUTOCONNECTGROUPSALL" Global="AUTOCONNECTGROUPSALL" />
+        <Command Local="AUTOCGA" Global="AUTOCGA" />
+      </Commands>
+    </ComponentEntry>
   </Components>
 </ApplicationPackage>

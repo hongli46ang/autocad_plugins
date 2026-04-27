@@ -454,6 +454,61 @@
   (max w h)
 )
 
+(defun wsc:bbox-from-points (pts / mnx mny mnz mxx mxy mxz p)
+  (if pts
+    (progn
+      (setq p   (car pts)
+            mnx (car p)
+            mny (cadr p)
+            mnz (caddr p)
+            mxx mnx
+            mxy mny
+            mxz mnz)
+      (foreach p (cdr pts)
+        (setq mnx (min mnx (car p))
+              mny (min mny (cadr p))
+              mnz (min mnz (caddr p))
+              mxx (max mxx (car p))
+              mxy (max mxy (cadr p))
+              mxz (max mxz (caddr p)))
+      )
+      (list (list mnx mny mnz) (list mxx mxy mxz))
+    )
+    nil
+  )
+)
+
+(defun wsc:merge-bbox (bboxA bboxB / mnA mxA mnB mxB)
+  (setq mnA (car bboxA)
+        mxA (cadr bboxA)
+        mnB (car bboxB)
+        mxB (cadr bboxB))
+  (list
+    (list (min (car mnA) (car mnB))
+          (min (cadr mnA) (cadr mnB))
+          (min (caddr mnA) (caddr mnB)))
+    (list (max (car mxA) (car mxB))
+          (max (cadr mxA) (cadr mxB))
+          (max (caddr mxA) (caddr mxB)))
+  )
+)
+
+(defun wsc:bbox-gap (bboxA bboxB / mnA mxA mnB mxB dx dy)
+  (setq mnA (car bboxA)
+        mxA (cadr bboxA)
+        mnB (car bboxB)
+        mxB (cadr bboxB)
+        dx  (cond
+              ((< (car mxA) (car mnB)) (- (car mnB) (car mxA)))
+              ((< (car mxB) (car mnA)) (- (car mnA) (car mxB)))
+              (T 0.0))
+        dy  (cond
+              ((< (cadr mxA) (cadr mnB)) (- (cadr mnB) (cadr mxA)))
+              ((< (cadr mxB) (cadr mnA)) (- (cadr mnA) (cadr mxB)))
+              (T 0.0)))
+  (sqrt (+ (* dx dx) (* dy dy)))
+)
+
 (defun wsc:quarters-from-bbox (bbox / mn mx cx cy cz)
   (setq mn (car bbox)
         mx (cadr bbox)
@@ -476,16 +531,161 @@
       (setq c (wsc:center-from-bbox bbox)
             q (wsc:quarters-from-bbox bbox)
             s (wsc:size-from-bbox bbox))
-      (list ename c q s)
+      (list ename c q s bbox (list ename))
     )
     (progn
       (setq p (wsc:get-base-point ename))
       (if p
-        (list ename p (list p p p p) 0.0)
+        (list ename p (list p p p p) 0.0 (list p p) (list ename))
         nil
       )
     )
   )
+)
+
+(defun wsc:node-bbox (node / bbox)
+  (setq bbox (nth 4 node))
+  (if bbox
+    bbox
+    (wsc:bbox-from-points (caddr node))
+  )
+)
+
+(defun wsc:node-members (node / members)
+  (setq members (nth 5 node))
+  (if members
+    members
+    (list (car node))
+  )
+)
+
+(defun wsc:node-from-bbox (members bbox / c q s)
+  (setq c (wsc:center-from-bbox bbox)
+        q (wsc:quarters-from-bbox bbox)
+        s (wsc:size-from-bbox bbox))
+  (list (car members) c q s bbox members)
+)
+
+(defun wsc:merge-nodes (nodeA nodeB / bbox members)
+  (setq bbox    (wsc:merge-bbox (wsc:node-bbox nodeA) (wsc:node-bbox nodeB))
+        members (append (wsc:node-members nodeA) (wsc:node-members nodeB)))
+  (wsc:node-from-bbox members bbox)
+)
+
+(defun wsc:nodes-close-p (nodeA nodeB tol)
+  (<= (wsc:bbox-gap (wsc:node-bbox nodeA) (wsc:node-bbox nodeB)) tol)
+)
+
+(defun wsc:merge-close-nodes (nodes tol / clusters node merged keep cluster)
+  (setq clusters '())
+  (foreach node nodes
+    (setq merged nil
+          keep   '())
+    (foreach cluster clusters
+      (if (wsc:nodes-close-p node cluster tol)
+        (setq merged
+              (if merged
+                (wsc:merge-nodes merged cluster)
+                (wsc:merge-nodes node cluster)
+              )
+        )
+        (setq keep (cons cluster keep))
+      )
+    )
+    (if merged
+      (setq clusters (cons merged (reverse keep)))
+      (setq clusters (cons node clusters))
+    )
+  )
+  (reverse clusters)
+)
+
+(defun wsc:assoc-ename (ename items)
+  (vl-some
+    '(lambda (item)
+       (if (eq (car item) ename)
+         item
+       )
+     )
+    items
+  )
+)
+
+(defun wsc:find-nearby-text-entity (ename token / bbox mn mx size margin p1 p2 ss i total en txt tb c tc d best bestD)
+  (if (= (wsc:trim token) "")
+    nil
+    (progn
+      (setq bbox (wsc:get-bbox ename))
+      (if bbox
+        (progn
+          (setq mn     (car bbox)
+                mx     (cadr bbox)
+                c      (wsc:center-from-bbox bbox)
+                size   (max (abs (- (car mx) (car mn)))
+                            (abs (- (cadr mx) (cadr mn))))
+                margin (max 50.0 (* size 0.8))
+                p1     (list (- (car mn) margin) (- (cadr mn) margin) 0.0)
+                p2     (list (+ (car mx) margin) (+ (cadr mx) margin) 0.0)
+                ss     (ssget "_C" p1 p2 '((0 . "TEXT,MTEXT,ATTRIB,ATTDEF")))
+                i      0
+                total  (if ss (sslength ss) 0)
+                best   nil
+                bestD  nil)
+          (while (< i total)
+            (setq en  (ssname ss i)
+                  txt (wsc:get-text-from-entity en))
+            (if (wsc:str-eq-ci token txt)
+              (progn
+                (setq tb (wsc:get-bbox en))
+                (if tb
+                  (setq tc (wsc:center-from-bbox tb))
+                  (setq tc (wsc:get-base-point en))
+                )
+                (if tc
+                  (progn
+                    (setq d (wsc:dist2 c tc))
+                    (if (or (null bestD) (< d bestD))
+                      (setq best  en
+                            bestD d)
+                    )
+                  )
+                )
+              )
+            )
+            (setq i (1+ i))
+          )
+          best
+        )
+        nil
+      )
+    )
+  )
+)
+
+(defun wsc:merge-nodes-by-token-text (nodes token / groups unanchored node anchor rec merged out)
+  (setq groups     '()
+        unanchored '())
+  (foreach node nodes
+    (setq anchor (wsc:find-nearby-text-entity (car node) token))
+    (if anchor
+      (progn
+        (setq rec (wsc:assoc-ename anchor groups))
+        (if rec
+          (progn
+            (setq merged (wsc:merge-nodes (cdr rec) node))
+            (setq groups (subst (cons anchor merged) rec groups))
+          )
+          (setq groups (cons (cons anchor node) groups))
+        )
+      )
+      (setq unanchored (cons node unanchored))
+    )
+  )
+  (setq out unanchored)
+  (foreach rec groups
+    (setq out (cons (cdr rec) out))
+  )
+  (reverse out)
 )
 
 (defun wsc:build-nodes (entities / out node)
@@ -497,6 +697,36 @@
     )
   )
   (reverse out)
+)
+
+(defun wsc:build-station-nodes (entities spec / nodes token avg tol merged)
+  (setq nodes (wsc:build-nodes entities))
+  (if (and (= (car spec) 'entity) (> (length nodes) 1))
+    (progn
+      (setq token (wsc:spec-text-token spec))
+      (if (/= (wsc:trim token) "")
+        (setq merged (wsc:merge-nodes-by-token-text nodes token))
+        (progn
+          (setq avg (wsc:avg-node-size nodes)
+                tol (max 1.0 (* avg 0.75))
+                merged (wsc:merge-close-nodes nodes tol))
+        )
+      )
+      (if (< (length merged) (length nodes))
+        (prompt
+          (strcat
+            "\n3/5 已合併 Explode 工作站內部圖元: "
+            (itoa (length nodes))
+            " -> "
+            (itoa (length merged))
+            " 個節點。"
+          )
+        )
+      )
+      merged
+    )
+    nodes
+  )
 )
 
 (defun wsc:avg-node-size (nodes / sum cnt sz)
@@ -527,7 +757,7 @@
 (defun wsc:find-node-by-ename (ename nodes)
   (vl-some
     '(lambda (n)
-       (if (eq (car n) ename)
+       (if (wsc:entity-in-list-p ename (wsc:node-members n))
          n
        )
      )
@@ -1009,7 +1239,7 @@
           (if (< (length stations) 2)
             (prompt "\n區域內可連線工作站不足 2 個，已取消。")
             (progn
-              (setq nodes (wsc:build-nodes stations))
+              (setq nodes (wsc:build-station-nodes stations spec))
               (if (< (length nodes) 2)
                 (prompt "\n可用工作站節點不足 2 個，已取消。")
                 (progn
