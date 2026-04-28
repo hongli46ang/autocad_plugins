@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage
+  SchemaVersion="1.0"
+  AutodeskProduct="AutoCAD"
+  Name="AutoTableFromDataLink"
+  Description="Create an AutoCAD table from an existing data link"
+  AppVersion="1.0.0"
+  ProductCode="{C3B11F36-9F04-43C7-8625-80A8912D6EB4}"
+  UpgradeCode="{D5919DA6-491B-497E-863C-B6A3D2DE3634}">
+  <CompanyDetails Name="AutoTableFromDataLink" Url="" />
+
+  <Components Description="AutoCAD .NET table command">
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R25.0" />
+
+    <ComponentEntry
+      AppName="AutoTableFromDataLink"
+      AppType=".NET"
+      ModuleName="./Contents/Windows/AutoTableFromDataLink.dll"
+      AppDescription="Create a formatted table from a selected data link"
+      LoadOnAutoCADStartup="False"
+      LoadOnCommandInvocation="True">
+      <Commands GroupName="AUTOTABLE_FROM_DATALINK">
+        <Command Local="AUTOTABLEDATALINK" Global="AUTOTABLEDATALINK" />
+        <Command Local="AUTOTABLEDL" Global="AUTOTABLEDL" />
+      </Commands>
+    </ComponentEntry>
+  </Components>
+</ApplicationPackage>

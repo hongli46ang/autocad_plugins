@@ -76,6 +76,19 @@
     </ComponentEntry>
 
     <ComponentEntry
+      AppName="outlet_box_placer.lsp"
+      AppType="Lisp"
+      ModuleName="./Contents/outlet_box_placer.lsp"
+      AppDescription="Place outlet box symbols along selected objects"
+      LoadOnAutoCADStartup="True"
+      LoadOnCommandInvocation="True">
+      <Commands GroupName="OUTLET_BOX_PLACER">
+        <Command Local="AUTOOUTLETBOX" Global="AUTOOUTLETBOX" />
+        <Command Local="AUTOOB" Global="AUTOOB" />
+      </Commands>
+    </ComponentEntry>
+
+    <ComponentEntry
       AppName="connected_symbol_groups.lsp"
       AppType="Lisp"
       ModuleName="./Contents/connected_symbol_groups.lsp"

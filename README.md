@@ -17,6 +17,13 @@
     5. Data Link 會使用相對於目前 DWG 的相對路徑
     6. 建立 Data Link 時，程式會以唯讀模式讀取 Excel，並使用「不回寫來源檔 + 保留 Excel 格式(含合併儲存格)」設定
 
+- AutoTableFromDataLink.bundle :
+    1. C# / AutoCAD .NET 外掛，原始碼在 `AutoTableFromDataLink.bundle/Contents/Source`
+    2. 建置後把整個 `AutoTableFromDataLink.bundle` 放到 `%AppData%\Autodesk\ApplicationPlugins`
+    3. 執行 `AUTOTABLEDATALINK`（短指令 `AUTOTABLEDL`）
+    4. 依序選資料連結編號、選表格插入位置
+    5. 自動建立 Data Link 表格，並套用儲存格寬度 `2025`、高度 `486`、文字高度 `200`
+
 - workstation_auto_connect :
    - 目前僅適用大量排列方是一致的平板燈或工作站使用
     1. 執行 `AUTOWSCONNECTRANGE`
@@ -34,6 +41,21 @@
     7. 支援圖例已 Explode 的情境：
        圖例自動判定優先序為 Block/圓/文字；若第 1 步框選內含文字（如 `E3`），第 3 步會把該文字納入篩選條件
        若精準過濾為 0，會自動用忽略圖層的寬鬆比對重試
+
+- outlet_box_placer :
+   1. 執行 `AUTOOUTLETBOX`（短指令 `AUTOOB`）
+   2. 依序完成 1~6 步：
+      1/6 框選/多選出線盒圖例；程式會以圖例外框中心作為放置中心點
+      2/6 框選/多選適用的線/曲線圖例（支援 `LINE / LWPOLYLINE / POLYLINE / ARC / SPLINE / ELLIPSE`）
+      3/6 選擇放置模式
+      4/6 指定盤位置作為起算端；直接 Enter 則每條路徑固定由左邊優先、同 X 時上面優先的一端開始
+      5/6 框選/多選要放置出線盒的範圍
+      6/6 自動過濾出與第 2 步圖例相同的物件；一般模式會由指定起算端開始放置，第一個出線盒中心點在端點上，之後每 `5000` 圖面單位放一個（圖面以 mm 繪製時為 5m）
+   3. 過濾條件使用曲線類型、圖層、顏色、線型；閉合或沒有端點的物件會略過並在完成時回報數量
+   4. 放置模式：
+      - `Normal`：每個物件各自從起點計算
+      - `Connect`：將端點相接的多個物件視為同一條連續路徑累計長度，端點相接容許誤差為 `1.0` 圖面單位
+      - `Center`：適用 `L01/L02` 這類雙線路徑；若左右兩邊可分開選取，會先配對後取中線；若是單一完整閉合聚合線，會以前半/後半互相取中線，使用頭端中心到尾端中心的中線長度；雙線端點配對最大距離預設 `1000.0` 圖面單位
 
 - connected_symbol_groups :
    1. 執行 `AUTOCONNECTGROUPS`（短指令 `AUTOCG`）
