@@ -19,10 +19,11 @@
 
 - AutoTableFromDataLink.bundle :
     1. C# / AutoCAD .NET 外掛，原始碼在 `AutoTableFromDataLink.bundle/Contents/Source`
-    2. 建置後把整個 `AutoTableFromDataLink.bundle` 放到 `%AppData%\Autodesk\ApplicationPlugins`
-    3. 執行 `AUTOTABLEDATALINK`（短指令 `AUTOTABLEDL`）
-    4. 依序選資料連結編號、選表格插入位置
-    5. 自動建立 Data Link 表格，並套用儲存格寬度 `2025`、高度 `486`、文字高度 `200`
+    2. AutoCAD 2021 使用，目標框架是 `.NET Framework 4.8`（`net48`）；建置電腦需要 `.NET Framework 4.8 Developer Pack`
+    3. 建置後把整個 `AutoTableFromDataLink.bundle` 放到 `%AppData%\Autodesk\ApplicationPlugins`
+    4. 執行 `AUTOTABLEDATALINK`（短指令 `AUTOTABLEDL`）
+    5. 依序選資料連結編號、選表格插入位置
+    6. 自動建立 Data Link 表格，並套用儲存格寬度 `2025`、高度 `486`、文字高度 `200`
 
 - workstation_auto_connect :
    - 目前僅適用大量排列方是一致的平板燈或工作站使用

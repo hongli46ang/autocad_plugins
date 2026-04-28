@@ -10,7 +10,7 @@
   <CompanyDetails Name="AutoTableFromDataLink" Url="" />
 
   <Components Description="AutoCAD .NET table command">
-    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R25.0" />
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R24.0" SeriesMax="R24.3" />
 
     <ComponentEntry
       AppName="AutoTableFromDataLink"
